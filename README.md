@@ -59,5 +59,10 @@ No market-data subscription yet; everything runs on fixtures and synthetic data.
   - A text syntax for filters. It gets designed against the exported Primus filters, which are
     its conformance set; until then, filters are built in Rust (see `expr.rs`).
   - `RVOL20DAYTIMEADJUSTED`: its exact definition has to come from the user.
-- **Not built, waiting on the subscription:** flat-file ingest (stage 1), the live driver
-  (stage 6), and a market calendar (holidays and half-days).
+- **Flat-file reader** (`flatfile.rs`): written against the columns and nanosecond timestamps
+  confirmed in Massive's docs; tested on hand-made rows only. ⚠ Two things to confirm with
+  Massive: whether flat-file prices are split-adjusted (the reader assumes raw), and the file
+  compression (the reader takes an already-decompressed stream).
+- **Not built, waiting on the subscription:** the historical store and adjustment pipeline
+  (stage 1 beyond the reader), the live driver (stage 6), and a market calendar (holidays and
+  half-days).

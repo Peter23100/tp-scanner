@@ -5,6 +5,7 @@
 //! rule for adding one.
 
 pub mod bar;
+pub mod flatfile;
 pub mod indicators;
 pub mod price;
 pub mod source;

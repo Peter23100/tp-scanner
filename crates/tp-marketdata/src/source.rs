@@ -182,6 +182,22 @@ impl ReplaySource {
     }
 }
 
+impl ReplaySource {
+    /// Replay pre-built events. They must already be in non-decreasing start order; anything
+    /// else fails the load (the index of the first offender is reported as `line`).
+    pub fn from_events(events: Vec<MarketEvent>) -> Result<Self, SourceError> {
+        let start = |e: &MarketEvent| match e {
+            MarketEvent::Bar { bar, .. } => bar.start,
+        };
+        for (i, w) in events.windows(2).enumerate() {
+            if start(&w[1]) < start(&w[0]) {
+                return Err(SourceError::OutOfOrder { line: i + 2, msg: "events not in time order".into() });
+            }
+        }
+        Ok(ReplaySource { events: events.into_iter() })
+    }
+}
+
 impl MarketSource for ReplaySource {
     fn next_event(&mut self) -> Option<Result<MarketEvent, SourceError>> {
         self.events.next().map(Ok)
