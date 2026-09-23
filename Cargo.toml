@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/tp-marketdata"]
+members = ["crates/tp-marketdata", "crates/tp-scan-engine"]
 
 [workspace.package]
 edition = "2021"

@@ -68,6 +68,7 @@ impl Bar<Unadjusted> {
 /// from a later period arrives, and [`Aggregator::close_through`] emits the current period once
 /// the clock has passed its end. Live use needs the second; a quiet symbol might not print again
 /// for minutes.
+#[derive(Debug, Clone)]
 pub struct Aggregator<B: Basis> {
     period_ms: i64,
     cur: Option<Bar<B>>,
@@ -121,6 +122,17 @@ impl<B: Basis> Aggregator<B> {
         } else {
             None
         }
+    }
+
+    /// The in-progress (incomplete) bar, if any. Windows that must include the current minute
+    /// read it from here.
+    pub fn current(&self) -> Option<&Bar<B>> {
+        self.cur.as_ref()
+    }
+
+    /// The output period in milliseconds.
+    pub fn period_ms(&self) -> i64 {
+        self.period_ms
     }
 
     /// Emits the in-progress bar unconditionally (end of a replay).

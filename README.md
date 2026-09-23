@@ -12,6 +12,7 @@ never holds broker credentials and never touches the order path.**
 | path | what |
 |---|---|
 | `crates/tp-marketdata` | session clock, typed prices, bars, rolling windows, the market-data input trait, indicators |
+| `crates/tp-scan-engine` | per-symbol state, measurement catalog, filter expressions, evaluator (memo + explain), scan loop, JSONL instrumentation |
 | `tools/parity` | the TradierPro chart math (verbatim JS snapshot) and the generator for the expected outputs the Rust port is tested against |
 
 ## Rules that hold from the first commit
@@ -44,6 +45,19 @@ node tools/parity/gen.mjs        # rewrites tools/parity/expected/*.json from re
 
 ## Status
 
-Stage 2 (market-data primitives), first slice. No market-data subscription yet; everything runs
-on fixtures. The filter language waits for the exported Primus filter list, because those
-filters are its conformance set.
+No market-data subscription yet; everything runs on fixtures and synthetic data.
+
+- **Built:** stage 2 primitives. Most of the stage-3 evaluator: filters compile to a closure
+  tree, measurements and definitions are memoized once per symbol per cycle, logic is
+  three-valued, and `explain` shows which clause was false or unknown. Also the scan loop (a bad
+  symbol never stops the scan), and stage-4 instrumentation (every evaluation's measurement
+  vector as JSONL).
+- **Measured** (`cargo run --release -p tp-scan-engine --example throughput`): 5,000 symbols ×
+  40 filters is one full-market cycle in ~11 ms on one thread, ~1% of a core at 1 Hz. That uses
+  synthetic minute bars; it's not yet measured on real data.
+- **Not built, waiting on the user:**
+  - A text syntax for filters. It gets designed against the exported Primus filters, which are
+    its conformance set; until then, filters are built in Rust (see `expr.rs`).
+  - `RVOL20DAYTIMEADJUSTED`: its exact definition has to come from the user.
+- **Not built, waiting on the subscription:** flat-file ingest (stage 1), the live driver
+  (stage 6), and a market calendar (holidays and half-days).
