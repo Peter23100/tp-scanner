@@ -1,6 +1,7 @@
 //! Measures the investigation's scale claim: 40 filters x 5,000 symbols x 1 Hz ~ 20% of one core.
 //!
 //!   cargo run --release -p tp-scan-engine --example throughput
+//!   cargo run --release -p tp-scan-engine --example throughput -- filters   # the real Primus set
 //!
 //! Synthetic data: 5,000 symbols, one-minute bars from 09:30, 40 filters shaped like the Primus
 //! sharp-move family (windows, an ATR ratio, a volume ratio, a new-high event, a shared
@@ -53,7 +54,12 @@ fn main() {
             60_000,
         ));
     }
+    // With a directory argument, measure the translated Primus filters instead.
+    if let Some(dir) = std::env::args().nth(1) {
+        p = tp_scan_engine::lang::load_dir(std::path::Path::new(&dir)).unwrap_or_else(|e| panic!("{e}"));
+    }
     let mut engine = Engine::new(&p).unwrap();
+    let filters = engine.compiled().filters().len();
     let open = Ts::from_ny_local(
         chrono::NaiveDate::from_ymd_opt(2026, 6, 15).unwrap(),
         chrono::NaiveTime::from_hms_opt(9, 30, 0).unwrap(),
@@ -64,7 +70,16 @@ fn main() {
     for s in &syms {
         engine.set_daily(
             s,
-            DailyRef { atr: Some(Price::new(1.0)), adv: Some(1e6), ..DailyRef::bare(session, Price::new(20.0)) },
+            DailyRef {
+                atr: Some(Price::new(1.0)),
+                adv: Some(1e6),
+                prev_high: Some(Price::new(21.0)),
+                prev_low: Some(Price::new(19.0)),
+                prev_month_high: Some(Price::new(25.0)),
+                prev_month_low: Some(Price::new(15.0)),
+                closes: Arc::from(vec![20.0; 260]),
+                ..DailyRef::bare(session, Price::new(20.0))
+            },
         );
     }
     let mut px: Vec<f64> = (0..SYMBOLS).map(|i| 5.0 + (i % 200) as f64).collect();
@@ -108,7 +123,7 @@ fn main() {
     }
     let per_sec = timed_evals as f64 / timed.as_secs_f64();
     let cycle = timed.as_secs_f64() / (MINUTES - 60) as f64;
-    println!("symbols {SYMBOLS}, filters {FILTERS}, measured over {} one-minute cycles", MINUTES - 60);
+    println!("symbols {SYMBOLS}, filters {filters}, measured over {} one-minute cycles", MINUTES - 60);
     println!("evaluations/sec (one thread): {per_sec:.0}");
     println!("one full-market cycle (all symbols x all filters): {:.1} ms", cycle * 1e3);
     println!("=> at a 1 Hz cycle, {:.1}% of one core", cycle * 100.0);

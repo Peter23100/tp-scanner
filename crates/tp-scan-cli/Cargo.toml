@@ -1,0 +1,16 @@
+[package]
+name = "tp-scan-cli"
+description = "Command line: check filter files, replay history through them"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "tp-scan"
+path = "src/main.rs"
+
+[dependencies]
+tp-marketdata = { path = "../tp-marketdata" }
+tp-scan-engine = { path = "../tp-scan-engine" }
+chrono.workspace = true
+flate2 = "1"
