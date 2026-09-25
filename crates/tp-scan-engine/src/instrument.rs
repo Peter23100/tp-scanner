@@ -8,14 +8,16 @@
 //!
 //! ```text
 //! {"type":"eval","filter":"spike_up","symbol":"XYZ","at_ms":1781531460000,"at_ny":"2026-06-15 09:51:00","result":"F","fired":false,"m":[["last",41.2],["atr",null]]}
-//! {"type":"signal", ...same fields...}
+//! {"type":"signal", ...same fields but result/fired..., "side":"long","last":41.2,"cols":[["ATR_POS",62.5]]}
+//! {"type":"list","filter":"Movers_Up_Alist","symbol":"XYZ","at_ms":...,"at_ny":"...","entered":true}
 //! {"type":"error","symbol":"XYZ","error":"..."}
 //! ```
 //!
 //! `m` is an ordered list of `[label, value]` pairs, with `null` for unknown. Size is roughly
 //! filters × symbols × bars, so point it at history or a watchlist, not the live full market.
 
-use crate::engine::{EngineError, Evaluation, Signal, Sink};
+use crate::compile::Side;
+use crate::engine::{EngineError, Evaluation, ListChange, Signal, Sink};
 use serde_json::{json, Value};
 use std::io::{self, Write};
 use std::sync::Arc;
@@ -70,12 +72,27 @@ fn ny(t: Ts) -> String {
 
 impl<W: Write> Sink for JsonlSink<W> {
     fn signal(&mut self, s: &Signal) {
+        let side = match s.side {
+            Side::Long => "long",
+            Side::Short => "short",
+            Side::Neutral => "neutral",
+        };
         let v = json!({
             "type": "signal", "filter": &*s.filter, "symbol": &*s.symbol,
-            "at_ms": s.at.millis(), "at_ny": ny(s.at), "m": m(&s.measurements),
+            "at_ms": s.at.millis(), "at_ny": ny(s.at), "side": side, "last": s.last,
+            "cols": m(&s.columns), "m": m(&s.measurements),
         });
         self.write(v);
     }
+
+    fn list_change(&mut self, c: &ListChange<'_>) {
+        let v = json!({
+            "type": "list", "filter": &**c.filter, "symbol": &**c.symbol,
+            "at_ms": c.at.millis(), "at_ny": ny(c.at), "entered": c.entered,
+        });
+        self.write(v);
+    }
+
 
     fn evaluation(&mut self, e: &Evaluation<'_>) {
         let v = json!({

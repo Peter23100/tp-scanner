@@ -41,6 +41,9 @@ pub enum Num {
     Abs(Box<Num>),
     Max(Box<Num>, Box<Num>),
     Min(Box<Num>, Box<Num>),
+    /// `if(c, a, b)`: `a` when `c` is true, `b` when false, unknown when `c` is unknown. The
+    /// user's RVOL and PM_RVOL time-of-day curves are written this way.
+    If(Box<Cond>, Box<Num>, Box<Num>),
 }
 
 /// Ordering comparisons only. Float equality is a trap in a filter language, so it isn't offered.
@@ -98,6 +101,11 @@ pub fn n(x: f64) -> Num {
 /// A reference to a named numeric intermediate.
 pub fn def(name: &str) -> Num {
     Num::Ref(Arc::from(name))
+}
+
+/// `if(c, a, b)`.
+pub fn if_(c: Cond, a: Num, b: Num) -> Num {
+    Num::If(Box::new(c), Box::new(a), Box::new(b))
 }
 
 impl Num {
@@ -182,7 +190,9 @@ impl fmt::Display for Num {
             Num::Abs(a) => write!(f, "abs({a})"),
             Num::Max(a, b) => write!(f, "max({a}, {b})"),
             Num::Min(a, b) => write!(f, "min({a}, {b})"),
+            Num::If(c, a, b) => write!(f, "if({c}, {a}, {b})"),
         }
+
     }
 }
 

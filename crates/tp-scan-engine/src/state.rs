@@ -19,9 +19,20 @@
 //! reaching back before this symbol's first bar, a daily reference for a different session, no
 //! RTH bar yet. `None` becomes `Unknown` in the evaluator. A window that IS covered but saw no
 //! trades has volume 0, which is a known answer.
+//!
+//! ## Beyond bars
+//!
+//! - **5-minute candles** ([`CANDLE_MS`]), clock-aligned and built from RTH bars only, kept across
+//!   sessions so a 5-minute EMA20 is warm at the open, the way a chart's is. ⚠ They are
+//!   unadjusted: a split between sessions breaks the series until it refills.
+//! - **Reference data** ([`Reference`]): float. Slow-changing, set from outside.
+//! - **Auction data** ([`AuctionSnapshot`]) and the halt flag: set from outside for one session,
+//!   refused on any other, like [`DailyRef`].
 
+use chrono::{Datelike, NaiveDate, Timelike};
 use std::collections::VecDeque;
 use std::fmt;
+use std::sync::Arc;
 use tp_marketdata::bar::{Aggregator, Bar};
 use tp_marketdata::indicators::atr::Atr;
 use tp_marketdata::indicators::ma::Sma;
@@ -34,6 +45,12 @@ use tp_marketdata::time::{Phase, SessionDate, Ts};
 pub const FINE_SPAN_MS: i64 = 5 * 60_000;
 /// How much 1-minute history is kept: the longest window (120 min) plus room for offset windows.
 pub const COARSE_SPAN_MS: i64 = 240 * 60_000;
+/// The candle width intraday indicators (EMA, SMA, RSI, Bollinger) are computed on. The only one
+/// the Primus filters use.
+pub const CANDLE_MS: i64 = 5 * 60_000;
+/// How many completed candles are kept: enough that a 20-period EMA or Wilder average started from
+/// the kept series matches one started from the beginning to ~1e-8.
+pub const CANDLES_KEPT: usize = 250;
 
 /// Bars at one resolution, keeping those that start within `span_ms` of the newest.
 #[derive(Debug, Clone)]
@@ -135,8 +152,13 @@ pub struct WindowAgg {
 struct SessionStats {
     date: SessionDate,
     open: Option<Price<Unadjusted>>,
+    rth_high: Option<Price<Unadjusted>>,
+    rth_low: Option<Price<Unadjusted>>,
     vol_all: f64,
     vol_rth: f64,
+    /// Extended-hours VWAP accumulators: every phase from the session's first print.
+    ext_tpv: f64,
+    ext_vol: f64,
     pre_high: Option<Price<Unadjusted>>,
     pre_low: Option<Price<Unadjusted>>,
     pre_vol: f64,
@@ -149,8 +171,12 @@ impl SessionStats {
         SessionStats {
             date,
             open: None,
+            rth_high: None,
+            rth_low: None,
             vol_all: 0.0,
             vol_rth: 0.0,
+            ext_tpv: 0.0,
+            ext_vol: 0.0,
             pre_high: None,
             pre_low: None,
             pre_vol: 0.0,
@@ -162,10 +188,16 @@ impl SessionStats {
     fn update(&mut self, b: &Bar<Unadjusted>) {
         let phase = b.phase();
         self.vol_all += b.volume;
+        if b.volume > 0.0 {
+            self.ext_tpv += b.typical_price().value() * b.volume;
+            self.ext_vol += b.volume;
+        }
         match phase {
             Phase::Rth => {
                 self.vol_rth += b.volume;
                 self.open.get_or_insert(b.open);
+                self.rth_high = Some(self.rth_high.map_or(b.high, |h| h.max(b.high)));
+                self.rth_low = Some(self.rth_low.map_or(b.low, |l| l.min(b.low)));
             }
             Phase::Pre => {
                 self.pre_vol += b.volume;
@@ -190,10 +222,20 @@ impl SessionStats {
 pub struct DailyRef {
     pub session: SessionDate,
     pub prev_close: Price<Adjusted>,
+    /// The prior session's high and low.
+    pub prev_high: Option<Price<Adjusted>>,
+    pub prev_low: Option<Price<Adjusted>>,
+    /// High and low of the prior **completed calendar month** (Primus `MonthHigh_I(P1)`). `None`
+    /// unless the history reaches back before that month's first day, so a month seen only in
+    /// part is never passed off as the whole month.
+    pub prev_month_high: Option<Price<Adjusted>>,
+    pub prev_month_low: Option<Price<Adjusted>>,
     pub atr: Option<Price<Adjusted>>,
     pub atr_len: usize,
     pub adv: Option<f64>,
     pub adv_len: usize,
+    /// The daily closes the reference was built from, oldest first, for daily moving averages.
+    pub closes: Arc<[f64]>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -219,6 +261,23 @@ impl fmt::Display for DailyRefError {
 impl std::error::Error for DailyRefError {}
 
 impl DailyRef {
+    /// Only a prior close; every other value unknown. For tests and hand-built references.
+    pub fn bare(session: SessionDate, prev_close: Price<Adjusted>) -> DailyRef {
+        DailyRef {
+            session,
+            prev_close,
+            prev_high: None,
+            prev_low: None,
+            prev_month_high: None,
+            prev_month_low: None,
+            atr: None,
+            atr_len: 14,
+            adv: None,
+            adv_len: 20,
+            closes: Arc::from(Vec::new()),
+        }
+    }
+
     /// Build from completed daily bars, oldest first, all dated before `session` and all adjusted
     /// to `session`'s basis. ATR is Wilder's over `atr_len` bars; ADV is the simple mean volume of
     /// the last `adv_len` bars. Either is `None` if the history is too short.
@@ -233,6 +292,11 @@ impl DailyRef {
         let mut atr = Atr::new(atr_len);
         let mut adv = Sma::<f64>::new(adv_len);
         let (mut atr_v, mut adv_v) = (None, None);
+        let this_month = NaiveDate::from_ymd_opt(session.0.year(), session.0.month(), 1).expect("day 1 exists");
+        let prior_month = this_month.checked_sub_months(chrono::Months::new(1)).expect("in range");
+        let mut month: Option<(Price<Adjusted>, Price<Adjusted>)> = None;
+        let mut seen_before_prior_month = false;
+        let mut closes = Vec::with_capacity(history.len());
         for b in history {
             let d = b.session_date();
             if d >= session {
@@ -244,8 +308,103 @@ impl DailyRef {
             prev = Some(d);
             atr_v = atr.update(b);
             adv_v = adv.update(b.volume);
+            closes.push(b.close.value());
+            if d.0 < prior_month {
+                seen_before_prior_month = true;
+            } else if d.0 < this_month {
+                month = Some(month.map_or((b.high, b.low), |(h, l)| (h.max(b.high), l.min(b.low))));
+            }
         }
-        Ok(DailyRef { session, prev_close: last.close, atr: atr_v, atr_len, adv: adv_v, adv_len })
+        let month = month.filter(|_| seen_before_prior_month);
+        Ok(DailyRef {
+            session,
+            prev_close: last.close,
+            prev_high: Some(last.high),
+            prev_low: Some(last.low),
+            prev_month_high: month.map(|m| m.0),
+            prev_month_low: month.map(|m| m.1),
+            atr: atr_v,
+            atr_len,
+            adv: adv_v,
+            adv_len,
+            closes: Arc::from(closes),
+        })
+    }
+}
+
+/// Slow-changing facts about a symbol, set from outside.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Reference {
+    /// Float in **shares** (Primus `FloatShares` is in millions; the translation multiplies).
+    pub float_shares: Option<f64>,
+}
+
+/// Auction and imbalance data for one session, set from outside (no feed is wired yet).
+///
+/// Every field is optional: "not published" is unknown, never 0. That is exactly the guard the
+/// user's `Clear_ATR` / `Near_ATR` fields lack in Primus, where an unpublished clearing price
+/// reads 0 and becomes a large false move.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AuctionSnapshot {
+    pub session: SessionDate,
+    pub imbalance_buy_nyse: Option<f64>,
+    pub imbalance_sell_nyse: Option<f64>,
+    pub imbalance_buy_nasdaq: Option<f64>,
+    pub imbalance_sell_nasdaq: Option<f64>,
+    pub ind_bid: Option<Price<Unadjusted>>,
+    pub ind_ask: Option<Price<Unadjusted>>,
+    pub clear_price: Option<Price<Unadjusted>>,
+    pub near_price: Option<Price<Unadjusted>>,
+}
+
+impl AuctionSnapshot {
+    pub fn empty(session: SessionDate) -> Self {
+        AuctionSnapshot {
+            session,
+            imbalance_buy_nyse: None,
+            imbalance_sell_nyse: None,
+            imbalance_buy_nasdaq: None,
+            imbalance_sell_nasdaq: None,
+            ind_bid: None,
+            ind_ask: None,
+            clear_price: None,
+            near_price: None,
+        }
+    }
+}
+
+/// Clock-aligned candles from RTH bars, kept across sessions.
+#[derive(Debug, Clone)]
+struct Candles {
+    agg: Aggregator<Unadjusted>,
+    closes: VecDeque<f64>,
+}
+
+impl Candles {
+    fn new() -> Self {
+        Candles { agg: Aggregator::new(CANDLE_MS).expect("5 minutes divides an hour"), closes: VecDeque::new() }
+    }
+
+    fn push(&mut self, b: Bar<Unadjusted>) {
+        if b.phase() != Phase::Rth {
+            return;
+        }
+        // Order was checked by the caller, so the aggregator can't refuse this bar.
+        if let Ok(Some(done)) = self.agg.push(b) {
+            self.closes.push_back(done.close.value());
+            if self.closes.len() > CANDLES_KEPT {
+                self.closes.pop_front();
+            }
+        }
+    }
+
+    /// Completed closes, oldest first, then the forming candle's close (Primus `CURRENT`).
+    fn series(&self) -> Vec<f64> {
+        let mut v: Vec<f64> = self.closes.iter().copied().collect();
+        if let Some(c) = self.agg.current() {
+            v.push(c.close.value());
+        }
+        v
     }
 }
 
@@ -284,6 +443,10 @@ pub struct SymbolState {
     now: Option<Ts>,
     session: Option<SessionStats>,
     daily: Option<DailyRef>,
+    candles: Candles,
+    reference: Reference,
+    auction: Option<AuctionSnapshot>,
+    halted: Option<(SessionDate, bool)>,
 }
 
 impl Default for SymbolState {
@@ -304,11 +467,43 @@ impl SymbolState {
             now: None,
             session: None,
             daily: None,
+            candles: Candles::new(),
+            reference: Reference::default(),
+            auction: None,
+            halted: None,
         }
     }
 
     pub fn set_daily(&mut self, d: DailyRef) {
         self.daily = Some(d);
+    }
+
+    pub fn set_reference(&mut self, r: Reference) {
+        self.reference = r;
+    }
+
+    pub fn set_auction(&mut self, a: AuctionSnapshot) {
+        self.auction = Some(a);
+    }
+
+    pub fn set_halted(&mut self, session: SessionDate, halted: bool) {
+        self.halted = Some((session, halted));
+    }
+
+    pub fn reference(&self) -> &Reference {
+        &self.reference
+    }
+
+    /// Today's auction data, only if it was set for the session in progress.
+    pub fn auction_today(&self) -> Option<&AuctionSnapshot> {
+        let today = self.session_date()?;
+        self.auction.as_ref().filter(|a| a.session == today)
+    }
+
+    /// Whether the symbol is halted, only if a halt state was set for the session in progress.
+    pub fn halted_today(&self) -> Option<bool> {
+        let today = self.session_date()?;
+        self.halted.filter(|h| h.0 == today).map(|h| h.1)
     }
 
     /// Add a completed intraday bar. `now` becomes the bar's end.
@@ -332,6 +527,7 @@ impl SymbolState {
         if let Some(s) = self.session.as_mut() {
             s.update(&bar);
         }
+        self.candles.push(bar);
         match res {
             Resolution::Second => {
                 self.fine.push(bar);
@@ -380,6 +576,35 @@ impl SymbolState {
     pub fn session_open(&self) -> Option<Price<Unadjusted>> {
         self.session.as_ref()?.open
     }
+
+    /// The RTH high so far today, including the newest bar (Primus `DayHigh(CURRENT, NO)`).
+    pub fn day_high(&self) -> Option<Price<Unadjusted>> {
+        self.session.as_ref()?.rth_high
+    }
+
+    pub fn day_low(&self) -> Option<Price<Unadjusted>> {
+        self.session.as_ref()?.rth_low
+    }
+
+    /// VWAP over every phase from the session's first print (Primus `VWAP(CURRENT, YES, ...)`).
+    /// Unknown before any volume.
+    pub fn vwap_extended(&self) -> Option<f64> {
+        let s = self.session.as_ref()?;
+        (s.ext_vol > 0.0).then(|| s.ext_tpv / s.ext_vol)
+    }
+
+    /// Minutes since New York midnight of the newest print (Primus `TickTime`: 570 = 09:30). The
+    /// newest print is the last millisecond of the newest bar, so the 09:30 minute bar reads 570.
+    pub fn tick_minutes(&self) -> Option<f64> {
+        let t = Ts::from_millis(self.now?.millis() - 1)?.ny().time();
+        Some((t.hour() * 60 + t.minute()) as f64)
+    }
+
+    /// 5-minute candle closes (see [`CANDLE_MS`]), oldest first, ending with the forming candle.
+    pub fn candle_closes(&self) -> Vec<f64> {
+        self.candles.series()
+    }
+
 
     /// Session volume so far: all phases, or RTH only.
     pub fn day_volume(&self, include_extended: bool) -> Option<f64> {
@@ -625,7 +850,7 @@ pub(crate) mod tests {
         let today = SessionDate(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
         let yesterday = SessionDate(NaiveDate::from_ymd_opt(2026, 6, 12).unwrap());
         let mut s = minutes(1);
-        let r = DailyRef { session: yesterday, prev_close: Price::new(1.0), atr: None, atr_len: 14, adv: None, adv_len: 20 };
+        let r = DailyRef::bare(yesterday, Price::new(1.0));
         s.set_daily(r.clone());
         assert!(s.daily_for_today().is_none());
         assert!(s.today_on_adjusted_basis(Price::new(1.0)).is_none());

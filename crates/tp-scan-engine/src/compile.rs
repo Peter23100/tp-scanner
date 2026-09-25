@@ -58,19 +58,85 @@ impl std::ops::Not for Tri {
     }
 }
 
+/// What a filter produces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// Emits a signal each time the condition is true, subject to the cooldown (a Primus filter).
+    Trigger,
+    /// Maintains a list: a symbol is a member while the condition is true (a Primus static).
+    List,
+}
+
+/// Which way a filter leans. Display only (Primus panels: green long, red short).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Long,
+    Short,
+    Neutral,
+}
+
+/// When a filter is evaluated, by the session phase of the newest bar. Outside its hours a
+/// filter is not evaluated at all: triggers don't fire and list membership is left as it was.
+///
+/// This replaces the Primus `YES`/`NO` extended-hours flags as the way to keep an RTH filter
+/// from firing after hours (Blowoff_Reversal fired every few minutes into 19:56 on 09-05).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hours {
+    /// 09:30–16:00.
+    Rth,
+    /// 04:00–09:30.
+    Pre,
+    /// 04:00–20:00.
+    Extended,
+    /// Every bar, whatever its phase.
+    Any,
+}
+
+impl Hours {
+    pub fn admits(self, p: tp_marketdata::time::Phase) -> bool {
+        use tp_marketdata::time::Phase;
+        match self {
+            Hours::Rth => p == Phase::Rth,
+            Hours::Pre => p == Phase::Pre,
+            Hours::Extended => p != Phase::Closed,
+            Hours::Any => true,
+        }
+    }
+}
+
 /// A filter as written.
 #[derive(Clone, Debug)]
 pub struct FilterDef {
     pub name: Arc<str>,
     pub cond: Cond,
     /// Minimum time between two signals from this filter for one symbol (Primus
-    /// `MaxTriggersCount`). 0 = every true evaluation fires.
+    /// `MaxTriggersCount`). 0 = every true evaluation fires. Ignored by lists.
     pub cooldown_ms: i64,
+    pub kind: Kind,
+    pub side: Side,
+    pub hours: Hours,
+    /// Which screen the filter's panel sits on. Display only.
+    pub screen: Option<Arc<str>>,
+    /// Values shown next to each signal or list member (Primus panel columns such as `ATR_POS`).
+    pub columns: Vec<(Arc<str>, Num)>,
+    /// Lists are sorted by this, highest first (Primus `RNK_UP`). Unknown ranks sort last.
+    pub rank: Option<Num>,
 }
 
 impl FilterDef {
+    /// A trigger evaluated on every bar, with no columns.
     pub fn new(name: &str, cond: Cond, cooldown_ms: i64) -> Self {
-        FilterDef { name: Arc::from(name), cond, cooldown_ms }
+        FilterDef {
+            name: Arc::from(name),
+            cond,
+            cooldown_ms,
+            kind: Kind::Trigger,
+            side: Side::Neutral,
+            hours: Hours::Any,
+            screen: None,
+            columns: vec![],
+            rank: None,
+        }
     }
 }
 
@@ -164,6 +230,12 @@ const NO_NODE: usize = usize::MAX;
 pub struct CompiledFilter {
     pub name: Arc<str>,
     pub cooldown_ms: i64,
+    pub kind: Kind,
+    pub side: Side,
+    pub hours: Hours,
+    pub screen: Option<Arc<str>>,
+    columns: Vec<(Arc<str>, NumFn)>,
+    rank: Option<NumFn>,
     root: CondFn,
     nodes: Vec<NodeInfo>,
     /// Every numeric slot this filter reads, directly or through definitions, in first-use
@@ -227,6 +299,11 @@ impl<'a> Ctx<'a> {
         self.trace = saved;
         self.cond_memo[i] = Some(v);
         v
+    }
+
+    /// The symbol state this context evaluates against.
+    pub fn state(&self) -> &'a SymbolState {
+        self.state
     }
 
     fn tracing(&self) -> bool {
@@ -318,6 +395,37 @@ impl Compiler {
                 let abs = matches!(e, Num::Abs(_));
                 Box::new(move |c| {
                     let v = fa(c).map(|x| if abs { x.abs() } else { -x });
+                    c.rec(id, TraceVal::Num(v));
+                    v
+                })
+            }
+            Num::If(cnd, a, b) => {
+                let (fc, ic) = self.cond(cnd, traced, nodes, refs)?;
+                let (fa, ia) = self.num(a, traced, nodes, refs)?;
+                let (fb, ib) = self.num(b, traced, nodes, refs)?;
+                Self::set_children(nodes, id, vec![ic, ia, ib]);
+                Box::new(move |c| {
+                    let v = match fc(c) {
+                        Tri::True => {
+                            if c.tracing() {
+                                fb(c);
+                            }
+                            fa(c)
+                        }
+                        Tri::False => {
+                            if c.tracing() {
+                                fa(c);
+                            }
+                            fb(c)
+                        }
+                        Tri::Unknown => {
+                            if c.tracing() {
+                                fa(c);
+                                fb(c);
+                            }
+                            None
+                        }
+                    };
                     c.rec(id, TraceVal::Num(v));
                     v
                 })
@@ -593,13 +701,30 @@ impl Compiled {
             let mut nodes = vec![];
             let mut r = Refs::default();
             let (root, _) = c.cond(&fd.cond, true, &mut nodes, &mut r)?;
-            filters.push((fd, root, nodes, r));
+            // Columns and rank are display values, not part of the condition: compiled untraced
+            // and kept out of the measurement vector.
+            let mut display_refs = Refs::default();
+            let mut columns = Vec::with_capacity(fd.columns.len());
+            for (label, e) in &fd.columns {
+                columns.push((label.clone(), c.num(e, false, &mut scratch, &mut display_refs)?.0));
+            }
+            let rank = match &fd.rank {
+                Some(e) => Some(c.num(e, false, &mut scratch, &mut display_refs)?.0),
+                None => None,
+            };
+            filters.push((fd, root, nodes, r, columns, rank));
         }
         let filters = filters
             .into_iter()
-            .map(|(fd, root, nodes, r)| CompiledFilter {
+            .map(|(fd, root, nodes, r, columns, rank)| CompiledFilter {
                 name: fd.name.clone(),
                 cooldown_ms: fd.cooldown_ms,
+                kind: fd.kind,
+                side: fd.side,
+                hours: fd.hours,
+                screen: fd.screen.clone(),
+                columns,
+                rank,
                 root,
                 nodes,
                 slots: expand(&r),
@@ -641,6 +766,16 @@ impl Compiled {
     /// slot that short-circuiting skipped.
     pub fn measurements(&self, k: usize, ctx: &mut Ctx<'_>) -> Vec<(Arc<str>, Option<f64>)> {
         self.filters[k].slots.iter().map(|&s| (self.num_labels[s].clone(), ctx.num_slot(s))).collect()
+    }
+
+    /// Filter `k`'s display columns, labelled.
+    pub fn columns(&self, k: usize, ctx: &mut Ctx<'_>) -> Vec<(Arc<str>, Option<f64>)> {
+        self.filters[k].columns.iter().map(|(l, f)| (l.clone(), f(ctx))).collect()
+    }
+
+    /// Filter `k`'s rank, if it has one.
+    pub fn rank(&self, k: usize, ctx: &mut Ctx<'_>) -> Option<f64> {
+        self.filters[k].rank.as_ref().and_then(|f| f(ctx))
     }
 
     /// Evaluate filter `k` with tracing on, and return the clause-by-clause tree.
@@ -823,7 +958,42 @@ mod tests {
     }
 
     #[test]
+    fn if_picks_a_branch_and_an_unknown_condition_is_unknown() {
+        use crate::expr::if_;
+        let s = minutes(10); // last 18.5, no daily ref
+        let pick = |c: Cond| {
+            let cc = one(if_(c, n(1.0), n(2.0)).ge(n(2.0)));
+            run(&cc, &s)
+        };
+        assert_eq!(pick(m(Measure::Last).gt(n(10.0))), Tri::False, "took the 1.0 branch");
+        assert_eq!(pick(m(Measure::Last).lt(n(10.0))), Tri::True, "took the 2.0 branch");
+        assert_eq!(pick(m(Measure::Atr).gt(n(0.0))), Tri::Unknown);
+        // Nested, the way the RVOL curve is written.
+        let curve = if_(m(Measure::Time).le(n(570.0)), n(0.01), if_(m(Measure::Time).le(n(600.0)), n(0.15), n(1.0)));
+        let c = one(curve.clone().ge(n(0.15)));
+        assert_eq!(run(&c, &s), Tri::True, "09:39 is in the second segment");
+        let mut ctx = Ctx::new(&c, &s);
+        let ex = c.explain(0, &mut ctx);
+        assert!(ex.to_string().contains("if(time <= 570, 0.01, if(time <= 600, 0.15, 1)) = 0.15"), "{ex}");
+    }
+
+    #[test]
+    fn columns_and_rank_are_computed_but_not_measurements() {
+        let mut f = FilterDef::new("f", m(Measure::Last).gt(n(0.0)), 0);
+        f.columns = vec![(Arc::from("RANGE5"), m(Measure::High(Win::rolling_min(5))) - m(Measure::Low(Win::rolling_min(5))))];
+        f.rank = Some(m(Measure::Last) * n(2.0));
+        let c = Compiled::new(&Program::default().filter(f)).unwrap();
+        let s = minutes(10);
+        let mut ctx = Ctx::new(&c, &s);
+        assert_eq!(c.columns(0, &mut ctx), vec![(Arc::from("RANGE5"), Some(5.0))]);
+        assert_eq!(c.rank(0, &mut ctx), Some(37.0));
+        let labels: Vec<String> = c.measurements(0, &mut ctx).into_iter().map(|(l, _)| l.to_string()).collect();
+        assert_eq!(labels, vec!["last"]);
+    }
+
+    #[test]
     fn a_measure_used_by_many_filters_occupies_one_slot() {
+
         let mut p = Program::default();
         for i in 0..40 {
             p = p.filter(FilterDef::new(&format!("f{i}"), m(Measure::Atr).gt(n(i as f64)), 0));

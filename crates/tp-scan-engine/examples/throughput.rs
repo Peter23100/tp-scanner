@@ -64,7 +64,7 @@ fn main() {
     for s in &syms {
         engine.set_daily(
             s,
-            DailyRef { session, prev_close: Price::new(20.0), atr: Some(Price::new(1.0)), atr_len: 14, adv: Some(1e6), adv_len: 20 },
+            DailyRef { atr: Some(Price::new(1.0)), adv: Some(1e6), ..DailyRef::bare(session, Price::new(20.0)) },
         );
     }
     let mut px: Vec<f64> = (0..SYMBOLS).map(|i| 5.0 + (i % 200) as f64).collect();

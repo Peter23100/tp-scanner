@@ -56,12 +56,9 @@ fn program() -> Program {
 
 fn day1() -> DailyRef {
     DailyRef {
-        session: SessionDate(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap()),
-        prev_close: Price::new(41.0),
         atr: Some(Price::new(1.0)),
-        atr_len: 14,
         adv: Some(2_000_000.0),
-        adv_len: 20,
+        ..DailyRef::bare(SessionDate(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap()), Price::new(41.0))
     }
 }
 
