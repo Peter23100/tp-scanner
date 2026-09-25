@@ -8,5 +8,6 @@ pub mod compile;
 pub mod engine;
 pub mod expr;
 pub mod instrument;
+pub mod lang;
 pub mod measure;
 pub mod state;
