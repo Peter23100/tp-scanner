@@ -439,6 +439,9 @@ pub struct SymbolState {
     coarse: Ring,
     agg: Aggregator<Unadjusted>,
     first_start: Option<Ts>,
+    /// Set by the engine: the feed has been delivering since this instant, so a window reaching
+    /// back to it is covered even if this symbol hadn't printed yet (it had no trades).
+    quiet_since: Option<Ts>,
     last: Option<Bar<Unadjusted>>,
     now: Option<Ts>,
     session: Option<SessionStats>,
@@ -463,6 +466,7 @@ impl SymbolState {
             coarse: Ring::new(60_000, COARSE_SPAN_MS),
             agg: Aggregator::new(60_000).expect("one minute divides an hour"),
             first_start: None,
+            quiet_since: None,
             last: None,
             now: None,
             session: None,
@@ -476,6 +480,19 @@ impl SymbolState {
 
     pub fn set_daily(&mut self, d: DailyRef) {
         self.daily = Some(d);
+    }
+
+    /// Declare that the feed has carried every trade since `t`, so this symbol having no bars
+    /// before its first print means it was quiet, not unseen. Windows reaching back as far as `t`
+    /// then count as covered. Only the first call has any effect.
+    pub fn assume_quiet_since(&mut self, t: Ts) {
+        self.quiet_since.get_or_insert(t);
+    }
+
+    /// The earliest instant this state can speak for.
+    fn seen_from(&self) -> Option<i64> {
+        let first = self.first_start?.millis();
+        Some(self.quiet_since.map_or(first, |q| q.millis().min(first)))
     }
 
     pub fn set_reference(&mut self, r: Reference) {
@@ -659,7 +676,7 @@ impl SymbolState {
         };
         let use_fine = self.res == Some(Resolution::Second) && w.span_ms + w.offset_ms <= FINE_SPAN_MS;
         let ring = if use_fine { &self.fine } else { &self.coarse };
-        let first = self.first_start?.millis();
+        let first = self.seen_from()?;
         let coverage = ring.coverage_from().map_or(first, |c| c.max(first));
         if a < coverage {
             return None;
@@ -686,7 +703,7 @@ impl SymbolState {
     /// new high.
     pub fn new_extreme(&self, span_ms: i64, high: bool) -> Option<bool> {
         let last = self.last?;
-        let first = self.first_start?.millis();
+        let first = self.seen_from()?;
         let b = last.start.millis();
         let a = b - span_ms;
         if a < first {
@@ -763,7 +780,20 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_feed_start_covers_a_symbol_that_was_quiet_until_now() {
+        let mut s = SymbolState::new();
+        s.assume_quiet_since(t(4, 0, 0));
+        s.ingest(Resolution::Minute, b(t(9, 30, 0), 10.0, 11.0, 9.0, 10.5, 500.0)).unwrap();
+        let w = s.window(Win::rolling_min(120)).expect("covered back to 04:00");
+        assert_eq!((w.volume, w.bars), (500.0, 1));
+        assert_eq!(s.new_extreme(15 * 60_000, true), Some(true));
+        assert!(s.window(Win::rolling_min(400)).is_none(), "before the feed started is still unknown");
+        assert!(minutes(1).window(Win::rolling_min(120)).is_none(), "without it, unknown");
+    }
+
+    #[test]
     fn clock_window_is_only_the_period_in_progress() {
+
         let s = minutes(10); // now 09:40 -> current 15m clock period is 09:30-09:45
         let w = s.window(Win::clock_min(15, 0)).unwrap();
         assert_eq!(w.bars, 10);

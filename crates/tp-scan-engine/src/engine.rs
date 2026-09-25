@@ -19,6 +19,11 @@
 //! list member that stops printing stays listed until it prints again. Lists only show members
 //! seen in the engine's latest session, so yesterday's members don't linger into today.
 //!
+//! **Quiet is not unknown.** The engine assumes its feed carries every trade from the first event
+//! it sees, so a symbol that first prints at 09:30 had no trades before that, and its 120-minute
+//! window is covered, not unknown. True of a full-market feed or a replay of one. A feed that
+//! adds symbols part-way through a session breaks the assumption.
+//!
 //! ## Triggers and lists
 //!
 //! A [`Kind::Trigger`] filter emits a [`Signal`] when true and out of cooldown (a Primus filter).
@@ -151,6 +156,8 @@ pub struct Engine {
     lists: Vec<HashMap<Symbol, ListRow>>,
     latest_session: Option<SessionDate>,
     daily_provider: Option<DailyProvider>,
+    /// The start of the first bar the engine saw.
+    feed_start: Option<Ts>,
     stats: RunStats,
 }
 
@@ -158,7 +165,15 @@ impl Engine {
     pub fn new(p: &Program) -> Result<Engine, CompileError> {
         let compiled = Compiled::new(p)?;
         let lists = (0..compiled.filters().len()).map(|_| HashMap::new()).collect();
-        Ok(Engine { compiled, symbols: HashMap::new(), lists, latest_session: None, daily_provider: None, stats: RunStats::default() })
+        Ok(Engine {
+            compiled,
+            symbols: HashMap::new(),
+            lists,
+            latest_session: None,
+            daily_provider: None,
+            feed_start: None,
+            stats: RunStats::default(),
+        })
     }
 
     pub fn compiled(&self) -> &Compiled {
@@ -240,8 +255,11 @@ impl Engine {
         if self.latest_session.is_none_or(|s| s < session) {
             self.latest_session = Some(session);
         }
+        let feed_start = *self.feed_start.get_or_insert(bar.start);
         self.entry(symbol);
         let entry = self.symbols.get_mut(symbol).expect("created above");
+        entry.state.assume_quiet_since(feed_start);
+
         if entry.state.session_date() != Some(session) {
             if let Some(p) = self.daily_provider.as_mut() {
                 if let Some(d) = p(symbol, session) {

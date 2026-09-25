@@ -805,6 +805,27 @@ fn reserved(s: &str) -> bool {
         || matches!(s, "clock" | "nyse" | "nasdaq" | "any")
 }
 
+/// Read every `*.scan` file in `dir` (not recursive), in name order, and parse them as one
+/// program. I/O problems come back as a [`LangError`] naming the file, at line 0.
+pub fn load_dir(dir: &std::path::Path) -> Result<Program, LangError> {
+    let io = |file: &std::path::Path, e: std::io::Error| LangError { file: Arc::from(file.display().to_string()), pos: Pos::default(), msg: e.to_string() };
+    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .map_err(|e| io(dir, e))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "scan"))
+        .collect();
+    paths.sort();
+    if paths.is_empty() {
+        return Err(LangError { file: Arc::from(dir.display().to_string()), pos: Pos::default(), msg: "no .scan files here".into() });
+    }
+    let mut texts = vec![];
+    for p in &paths {
+        texts.push((p.display().to_string(), std::fs::read_to_string(p).map_err(|e| io(p, e))?));
+    }
+    let refs: Vec<(&str, &str)> = texts.iter().map(|(n, t)| (n.as_str(), t.as_str())).collect();
+    parse_sources(&refs)
+}
+
 /// Parse one source.
 pub fn parse(src: &str) -> Result<Program, LangError> {
     parse_sources(&[("<input>", src)])

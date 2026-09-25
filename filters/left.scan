@@ -1,0 +1,205 @@
+# LEFT SCREEN: the sharp-move family (master §4.1–§4.10). 10 filters.
+#
+# §4.1–§4.6 are one skeleton in six configurations; the master gives the skeleton plus a
+# parameter table rather than six pasted expressions, and these are built from exactly that.
+# Each tier: displacement >= last × PCT, >= $0.50, and the two-band ATR test (the `volatile`
+# condition in fields.scan). The 15-minute tier adds the concentration clause.
+
+# §4.1 A stock up on the day, at its high of day, on a sharp five-minute thrust.
+trigger M_Spike_Up {
+    side long
+    screen left
+    cooldown 1m
+    show ATR_POS
+    when day_volume >= 150_000
+     and last >= 2
+     and atr >= 0.50
+     and (RVOL20DAYTIMEADJUSTED >= 1.25 or volume(5m) * 24 >= volume(120m) * 2.0)
+     and volume(5m) >= 5_000
+     and last >= prev_close
+     and last >= day_high - 0.15 * atr
+     and up5 >= last * 0.020
+     and up5 >= 0.50
+     and ((volatile and up5 / atr >= 0.50) or (not volatile and up5 / atr >= 0.80))
+     and new_high(15m)
+}
+
+# §4.2 Exact mirror of §4.1.
+trigger M_Spike_Down {
+    side short
+    screen left
+    cooldown 1m
+    show ATR_NEG
+    when day_volume >= 150_000
+     and last >= 2
+     and atr >= 0.50
+     and (RVOL20DAYTIMEADJUSTED >= 1.25 or volume(5m) * 24 >= volume(120m) * 2.0)
+     and volume(5m) >= 5_000
+     and last <= prev_close
+     and last <= day_low + 0.15 * atr
+     and dn5 >= last * 0.020
+     and dn5 >= 0.50
+     and ((volatile and dn5 / atr >= 0.50) or (not volatile and dn5 / atr >= 0.80))
+     and new_low(15m)
+}
+
+# §4.3 A large, fast move up from a recent extreme over 5 or 15 minutes, regardless of direction
+# on the day. The reversal catcher: no day gate, deliberately.
+trigger M_Pop_Sensitive_Up {
+    side long
+    screen left
+    cooldown 1m
+    show ATR_POS
+    when day_volume >= 250_000
+     and last >= 2
+     and atr >= 0.50
+     and (RVOL20DAYTIMEADJUSTED >= 1.25 or volume(5m) * 24 >= volume(120m) * 3.0)
+     and volume(5m) >= 5_000
+     and (
+          (up5 >= last * 0.025 and up5 >= 0.50
+           and ((volatile and up5 / atr >= 0.50) or (not volatile and up5 / atr >= 0.80)))
+       or (up15 >= last * 0.040 and up15 >= 0.50
+           and ((volatile and up15 / atr >= 0.90) or (not volatile and up15 / atr >= 1.40))
+           and up5 >= up15 * 0.50)
+     )
+     and new_high(15m)
+}
+
+# §4.4 Exact mirror of §4.3.
+trigger M_Drop_Sensitive_Down {
+    side short
+    screen left
+    cooldown 1m
+    show ATR_NEG
+    when day_volume >= 250_000
+     and last >= 2
+     and atr >= 0.50
+     and (RVOL20DAYTIMEADJUSTED >= 1.25 or volume(5m) * 24 >= volume(120m) * 3.0)
+     and volume(5m) >= 5_000
+     and (
+          (dn5 >= last * 0.025 and dn5 >= 0.50
+           and ((volatile and dn5 / atr >= 0.50) or (not volatile and dn5 / atr >= 0.80)))
+       or (dn15 >= last * 0.040 and dn15 >= 0.50
+           and ((volatile and dn15 / atr >= 0.90) or (not volatile and dn15 / atr >= 1.40))
+           and dn5 >= dn15 * 0.50)
+     )
+     and new_low(15m)
+}
+
+# §4.5 Sensitive, but large: a strength flag. Strict subset of §4.3. (Primus name:
+# `M_Pop_Medium/EXT_Up`; `/` isn't a name character here.)
+trigger M_Pop_Medium_EXT_Up {
+    side long
+    screen left
+    cooldown 1m
+    show ATR_POS
+    when day_volume >= 250_000
+     and last >= 2
+     and atr >= 0.50
+     and (RVOL20DAYTIMEADJUSTED >= 1.25 or volume(5m) * 24 >= volume(120m) * 3.0)
+     and volume(5m) >= 5_000
+     and (
+          (up5 >= last * 0.050 and up5 >= 0.50
+           and ((volatile and up5 / atr >= 0.90) or (not volatile and up5 / atr >= 1.60)))
+       or (up15 >= last * 0.080 and up15 >= 0.50
+           and ((volatile and up15 / atr >= 1.40) or (not volatile and up15 / atr >= 2.40))
+           and up5 >= up15 * 0.50)
+     )
+     and new_high(15m)
+}
+
+# §4.6 Exact mirror of §4.5 (Primus `M_Drop_Medium/EXT_Down`).
+trigger M_Drop_Medium_EXT_Down {
+    side short
+    screen left
+    cooldown 1m
+    show ATR_NEG
+    when day_volume >= 250_000
+     and last >= 2
+     and atr >= 0.50
+     and (RVOL20DAYTIMEADJUSTED >= 1.25 or volume(5m) * 24 >= volume(120m) * 3.0)
+     and volume(5m) >= 5_000
+     and (
+          (dn5 >= last * 0.050 and dn5 >= 0.50
+           and ((volatile and dn5 / atr >= 0.90) or (not volatile and dn5 / atr >= 1.60)))
+       or (dn15 >= last * 0.080 and dn15 >= 0.50
+           and ((volatile and dn15 / atr >= 1.40) or (not volatile and dn15 / atr >= 2.40))
+           and dn5 >= dn15 * 0.50)
+     )
+     and new_low(15m)
+}
+
+# §4.7 Pasted expression. Previous-generation design (ELVA in all three tiers, no burst leg,
+# no percent floors); translated as loaded.
+trigger M_Drive_Up {
+    side long
+    screen left
+    cooldown 1m
+    when day_volume >= 250_000
+     and last >= 2
+     and RVOL20DAYTIMEADJUSTED >= 1.25
+     and last >= prev_close
+     and day_range >= 0.50
+     and (
+          (up5 / atr >= 0.75 and up5 / day_range >= 0.15)
+       or (up15 / atr >= 1.0 and up15 / day_range >= 0.15)
+       or (up30 / atr >= 1.25 and up30 / day_range >= 0.15)
+     )
+     and up30 >= 0.50
+     and new_high(5m)
+}
+
+# §4.8 Exact mirror of §4.7.
+trigger M_Drive_Down {
+    side short
+    screen left
+    cooldown 1m
+    when day_volume >= 250_000
+     and last >= 2
+     and RVOL20DAYTIMEADJUSTED >= 1.25
+     and last <= prev_close
+     and day_range >= 0.50
+     and (
+          (dn5 / atr >= 0.75 and dn5 / day_range >= 0.15)
+       or (dn15 / atr >= 1.0 and dn15 / day_range >= 0.15)
+       or (dn30 / atr >= 1.25 and dn30 / day_range >= 0.15)
+     )
+     and dn30 >= 0.50
+     and new_low(5m)
+}
+
+# §4.9 An expensive, genuinely volatile stock making a big dollar move. AND inside each tier.
+trigger High_ATR_Pop {
+    side long
+    screen left
+    cooldown 1m
+    show ATR_POS
+    when day_volume >= 1_000_000
+     and last >= 10
+     and atr >= 10
+     and atr / last <= 0.20
+     and RVOL20DAYTIMEADJUSTED >= 1.25
+     and (
+          (up5 / atr >= 0.30 and up5 / last >= 0.02)
+       or (up15 / atr >= 0.50 and up15 / last >= 0.03)
+     )
+     and new_high(15m)
+}
+
+# §4.10 Exact mirror of §4.9.
+trigger High_ATR_Drop {
+    side short
+    screen left
+    cooldown 1m
+    show ATR_NEG
+    when day_volume >= 1_000_000
+     and last >= 10
+     and atr >= 10
+     and atr / last <= 0.20
+     and RVOL20DAYTIMEADJUSTED >= 1.25
+     and (
+          (dn5 / atr >= 0.30 and dn5 / last >= 0.02)
+       or (dn15 / atr >= 0.50 and dn15 / last >= 0.03)
+     )
+     and new_low(15m)
+}

@@ -1,0 +1,169 @@
+# FOURTH AREA: statics and premarket lists (master §5). 12 of 13.
+#
+# NOT HERE: PM_LowFloat_Coil_Up (§5.6 describes it but doesn't quote it) and the plain `Halted`
+# static (not collected). Contra group: see filters/README.md.
+#
+# Hours are `extended` wherever the Primus expression reads premarket data (`Last(YES)`,
+# PM_RVOL, premarket high/low/volume) or auction data published outside RTH.
+
+# §5.1 The overflow list (102,686 on 09-21). As loaded at 0.75%; fix queue 8 (raise to 2%) is a
+# decision, not applied. Sorted by RNK_UP, the same measure it gates on.
+list Movers_Up_Alist {
+    side long
+    screen fourth
+    hours extended
+    rank RNK_UP
+    show RNK_UP, PM_RangePos, RVOL20DAYTIMEADJUSTED
+    when last >= 5
+     and last < 2500
+     and adv >= 500_000
+     and (RVOL20DAYTIMEADJUSTED >= 1.5 or (time <= 9:30 and PM_RVOL >= 2.0))
+     and (last - prev_close) / atr >= 0.40
+     and (last - prev_close) >= last * 0.0075
+}
+
+# §5.2 Mirror of §5.1.
+list Movers_Down_Alist {
+    side short
+    screen fourth
+    hours extended
+    rank RNK_DWN
+    show RNK_DWN, PM_RangePos, RVOL20DAYTIMEADJUSTED
+    when last >= 5
+     and last < 2500
+     and adv >= 500_000
+     and (RVOL20DAYTIMEADJUSTED >= 1.5 or (time <= 9:30 and PM_RVOL >= 2.0))
+     and (prev_close - last) / atr >= 0.40
+     and (prev_close - last) >= last * 0.0075
+}
+
+# §5.3 Today's-volume floor instead of an ADV floor: dormant low-floats qualify if they're
+# genuinely trading today (the WFF lesson).
+list LowFloat_Movers_List {
+    side long
+    screen fourth
+    hours extended
+    rank RNK_UP
+    show RNK_UP, PM_RangePos
+    when float <= 20_000_000
+     and prev_close >= 0.25
+     and prev_close <= 50
+     and adv >= 5_000
+     and (RVOL20DAYTIMEADJUSTED >= 2.0 or (time <= 9:30 and PM_RVOL >= 3.0))
+     and (last - prev_close) / prev_close >= 0.10
+     and day_volume_ext >= 250_000
+}
+
+# §5.4 Best-constructed filter in the collection. A trigger (its Primus panel is a FILTER with a
+# Time column and MaxTriggersCount 5). As loaded: no premarket-only gate (fix queue 7 would be
+# `hours pre`), so after the open it compares against frozen premarket references.
+trigger PM_Coil_Up {
+    side long
+    screen fourth
+    hours extended
+    cooldown 5m
+    show PM_RangePos
+    when last >= 5
+     and last < 2500
+     and adv >= 1_000_000
+     and pm_volume >= 100_000
+     and PM_RVOL >= 3.0
+     and (last - prev_close) / atr >= 1.0
+     and (last - prev_close) >= last * 0.03
+     and (pm_high - pm_low) / prev_close >= 0.01
+     and last >= vwap_ext
+     and last >= pm_high - 0.25 * (pm_high - pm_low)
+     and (high(1m) - low(1m)) / (pm_high - pm_low) <= 0.15
+     and (high(1m, 1) - low(1m, 1)) / (pm_high - pm_low) <= 0.15
+}
+
+# §5.5 Mirror of §5.4.
+trigger PM_Coil_Down {
+    side short
+    screen fourth
+    hours extended
+    cooldown 5m
+    show PM_RangePos
+    when last >= 5
+     and last < 2500
+     and adv >= 1_000_000
+     and pm_volume >= 100_000
+     and PM_RVOL >= 3.0
+     and (prev_close - last) / atr >= 1.0
+     and (prev_close - last) >= last * 0.03
+     and (pm_high - pm_low) / prev_close >= 0.01
+     and last <= vwap_ext
+     and last <= pm_low + 0.25 * (pm_high - pm_low)
+     and (high(1m) - low(1m)) / (pm_high - pm_low) <= 0.15
+     and (high(1m, 1) - low(1m, 1)) / (pm_high - pm_low) <= 0.15
+}
+
+# §5.7–§5.10 Imbalance statics: one clause each, by venue and side. Share-based on both venues.
+list Imbalance_Nasdaq_Buy {
+    side long
+    screen fourth
+    hours extended
+    rank Imb_Buy_Ratio
+    show Imb_Buy_Ratio, near_price, Near_ATR
+    when imb_buy(nasdaq) >= adv * 0.03
+}
+
+list Imbalance_Nasdaq_Sell {
+    side short
+    screen fourth
+    hours extended
+    rank Imb_Sell_Ratio
+    show Imb_Sell_Ratio, near_price, Near_ATR
+    when imb_sell(nasdaq) >= adv * 0.03
+}
+
+list Imbalance_NYSE_Buy {
+    side long
+    screen fourth
+    hours extended
+    rank Imb_Buy_Ratio
+    show Imb_Buy_Ratio, clear_price, Clear_ATR
+    when imb_buy(nyse) >= adv * 0.03
+}
+
+list Imbalance_NYSE_Sell {
+    side short
+    screen fourth
+    hours extended
+    rank Imb_Sell_Ratio
+    show Imb_Sell_Ratio, clear_price, Clear_ATR
+    when imb_sell(nyse) >= adv * 0.03
+}
+
+# §5.11 Primus name: `Halted Static New Minute`.
+list Halted_Static_New_Minute {
+    screen fourth
+    hours extended
+    show clear_price, near_price
+    when halted and day_volume > 0
+}
+
+# §5.12 Split-safe: compares the indicative bid with the ADJUSTED prior close. Primus name:
+# `NYSE IND UP`.
+list NYSE_IND_UP {
+    side long
+    screen fourth
+    hours extended
+    show ind_bid, ind_ask
+    when time < 12:00
+     and (imb_buy(nyse) > 0 or imb_sell(nyse) > 0)
+     and ind_bid > prev_close
+     and ind_bid > 0
+}
+
+# §5.13 Primus name: `NYSE IND DOWN`.
+list NYSE_IND_DOWN {
+    side short
+    screen fourth
+    hours extended
+    show ind_bid, ind_ask
+    when time < 12:00
+     and (imb_buy(nyse) > 0 or imb_sell(nyse) > 0)
+     and ind_bid < prev_close
+     and ind_bid > 0
+}

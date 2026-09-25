@@ -1,0 +1,94 @@
+# Custom fields: Peter's own Primus expressions (master §2), translated.
+#
+# Translation rules are in filters/README.md. The short version: windows are rolling (CURRENT ->
+# high(5m), P1 -> high(5m, 1)), venue and extended-hours flags are dropped, and a division by
+# zero is UNKNOWN rather than 0 or infinity, which gives VolROC3 / VolROC_1m_3 the guard they lack
+# in Primus and makes Clear_ATR / Near_ATR blank rather than hugely negative before the auction
+# prints (fix queue 13 and 14 happen by construction; nothing else from the fix queue is applied).
+
+# --- Volume: relative -------------------------------------------------------------------------
+
+# Fraction of the day's volume normally done by that minute. ⚠ RECONSTRUCTED from the §2 table,
+# not pasted: the step form (each value holds up to and including its time) is inferred from the
+# `<= 570` branch the master quotes. Confirm against the verbatim 14-level IF chain.
+field RVOL_CURVE = if(time <= 9:30, 0.01,
+                   if(time <= 9:32, 0.022,
+                   if(time <= 9:35, 0.040,
+                   if(time <= 9:40, 0.070,
+                   if(time <= 9:45, 0.095,
+                   if(time <= 9:50, 0.115,
+                   if(time <= 9:55, 0.133,
+                   if(time <= 10:00, 0.150,
+                   if(time <= 10:30, 0.24,
+                   if(time <= 11:30, 0.37,
+                   if(time <= 13:00, 0.53,
+                   if(time <= 14:30, 0.70,
+                   if(time <= 15:30, 0.85, 1.00)))))))))))))
+
+# Cumulative, so it carries the §2 dilution defect (AMBA, CMG, CRM, WDAY, PYPL). Kept as-is:
+# the filters' burst legs exist to work around it.
+field RVOL20DAYTIMEADJUSTED = day_volume / (adv * RVOL_CURVE)
+
+# Premarket curve. ⚠ RECONSTRUCTED from the §2 prose ("0.03 to 5:00am -> 0.10 by 6:00 -> ..."),
+# 8 levels as stated. Confirm against the verbatim IF chain.
+field PM_CURVE = if(time <= 5:00, 0.03,
+                 if(time <= 6:00, 0.10,
+                 if(time <= 7:00, 0.20,
+                 if(time <= 8:00, 0.35,
+                 if(time <= 8:30, 0.50,
+                 if(time <= 9:00, 0.70,
+                 if(time <= 9:15, 0.85, 1.0)))))))
+
+field PM_RVOL = pm_volume / (adv * 0.01 * PM_CURVE)
+
+# --- Volume: rate of change -------------------------------------------------------------------
+
+field VolROC3 = (volume(5m) - volume(5m, 3)) / volume(5m, 3)
+field VolROC_1m_3 = (volume(1m) - volume(1m, 3)) / volume(1m, 3)
+field VolFade_1m_Smooth = ((volume(1m) + volume(1m, 1) + volume(1m, 2)) - (volume(1m, 3) + volume(1m, 4) + volume(1m, 5)))
+                        / (volume(1m, 3) + volume(1m, 4) + volume(1m, 5) + 1)
+
+# The completed spike bar as a percent of ADV (the fixed, multiply-first version).
+field Spike_Vol_Pct = volume(5m, 1) * 100 / adv
+
+# --- Displacement and position ----------------------------------------------------------------
+
+field ATR_POS = (last - low(5m)) / atr * 100
+field ATR_NEG = (high(5m) - last) / atr * 100
+field Spike_Range_Pct = (high(5m, 1) - low(5m, 1)) / last * 100
+field PM_RangePos = (last - pm_low) / (pm_high - pm_low + 0.01) * 100
+field VWAP_Stretch = (vwap - last) / atr
+
+# --- Retracement (M_Spike_Hold instrumentation) -----------------------------------------------
+
+field Retrace_Pct_Up = (high(5m, 1) - low(5m)) / (high(5m, 1) - low(5m, 1) + 0.01) * 100
+field Retrace_Pct_Down = (high(5m) - low(5m, 1)) / (high(5m, 1) - low(5m, 1) + 0.01) * 100
+field Retrace_1m_Up = (high(5m, 1) - low(1m, 1)) / (high(5m, 1) - low(5m, 1) + 0.01) * 100
+field Retrace_1m_Down = (high(1m, 1) - low(5m, 1)) / (high(5m, 1) - low(5m, 1) + 0.01) * 100
+
+# --- Ranking (the Movers A-lists) -------------------------------------------------------------
+
+field RNK_UP = (last - prev_close) / atr * 100
+field RNK_DWN = (prev_close - last) / atr * 100
+
+# --- Auction and imbalance --------------------------------------------------------------------
+
+field Clear_ATR = (clear_price - last) / atr * 100
+field Near_ATR = (near_price - last) / atr * 100
+field Imb_Buy_Ratio = imb_buy(any) / adv * 100
+field Imb_Sell_Ratio = imb_sell(any) / adv * 100
+
+# --- Helpers (not Primus fields: names for quantities the filters repeat) ---------------------
+
+field up5 = last - low(5m)
+field up15 = last - low(15m)
+field up30 = last - low(30m)
+field dn5 = high(5m) - last
+field dn15 = high(15m) - last
+field dn30 = high(30m) - last
+field day_range = day_high - day_low
+# The completed five-minute spike bar's range (the hold family's P1 bar).
+field spike_range = high(5m, 1) - low(5m, 1)
+
+# The sharp-move family's volatility split: ATR at least 3% of yesterday's close.
+condition volatile = atr / prev_close >= 0.03

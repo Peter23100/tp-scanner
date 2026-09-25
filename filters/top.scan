@@ -1,0 +1,110 @@
+# TOP SCREEN: flushes and reversals (master §4.27–§4.32). 6 filters.
+
+# §4.27 Gapped at least 0.50 ATR at the open and pushing hard in the gap direction off a very
+# recent extreme. As loaded: no time gate despite the name (fix queue 6 not applied), and OR
+# between the ATR and percent legs inside each tier.
+trigger M_Open_Flush_Up {
+    side long
+    screen top
+    cooldown 1m
+    when adv >= 1_000_000
+     and last >= 5
+     and (open - prev_close) / atr >= 0.50
+     and (
+          ((last - low(1m)) / atr >= 0.20 or (last - low(1m)) / last >= 0.02)
+       or ((last - low(2m)) / atr >= 0.30 or (last - low(2m)) / last >= 0.03)
+       or ((last - low(3m)) / atr >= 0.40 or (last - low(3m)) / last >= 0.04)
+     )
+     and up5 >= 0.50
+     and RVOL20DAYTIMEADJUSTED >= 1.5
+     and new_high(5m)
+}
+
+# §4.28 Mirror of §4.27 (Primus spells this one `M_OpenFlush_Down`).
+trigger M_OpenFlush_Down {
+    side short
+    screen top
+    cooldown 1m
+    when adv >= 1_000_000
+     and last >= 5
+     and (prev_close - open) / atr >= 0.50
+     and (
+          ((high(1m) - last) / atr >= 0.20 or (high(1m) - last) / last >= 0.02)
+       or ((high(2m) - last) / atr >= 0.30 or (high(2m) - last) / last >= 0.03)
+       or ((high(3m) - last) / atr >= 0.40 or (high(3m) - last) / last >= 0.04)
+     )
+     and dn5 >= 0.50
+     and RVOL20DAYTIMEADJUSTED >= 1.5
+     and new_low(5m)
+}
+
+# §4.29 Up 3% on the day, beyond the VWAP band, still extending. Linear tier scaling.
+# ⚠ Primus's VWAP_UpperBand(V2) is documented as broken with an unknown formula. vwap_upper(2)
+# is the TradierPro chart's VWAP + 2 SD band, a different line, so this filter will NOT match
+# Primus's fires. `hours rth` (the default) stops the after-hours re-firing seen on 09-05.
+trigger Blowoff_Reversal_Up {
+    side long
+    screen top
+    cooldown 3m
+    when day_volume >= 1_000_000
+     and last >= 10
+     and (last - prev_close) / prev_close >= 0.03
+     and last >= vwap_upper(2)
+     and up5 >= 0.50
+     and (
+          up5 / atr >= 0.15
+       or (last - low(10m)) / atr >= 0.30
+       or up15 / atr >= 0.50
+       or up30 / atr >= 1.0
+     )
+}
+
+# §4.30 Mirror of §4.29.
+trigger Blowoff_Reversal_Down {
+    side short
+    screen top
+    cooldown 3m
+    when day_volume >= 1_000_000
+     and last >= 10
+     and (prev_close - last) / prev_close >= 0.03
+     and last <= vwap_lower(2)
+     and dn5 >= 0.50
+     and (
+          dn5 / atr >= 0.15
+       or (high(10m) - last) / atr >= 0.30
+       or dn15 / atr >= 0.50
+       or dn30 / atr >= 1.0
+     )
+}
+
+# §4.31 Exhaustion at the extreme: extended, beyond yesterday's high, overbought, volume drying
+# up. Name kept as Primus spells it. On rolling windows `volume(15m) < volume(15m, 1)` compares
+# two full quarter-hours, so the forming-bar inversion in §4.31 is gone without fix queue 9.
+# The RSI threshold on the down side (30) mirrors the up side's 70; the master says "mirrors
+# exactly" without quoting it.
+trigger Quite_Reversal_Up {
+    side long
+    screen top
+    cooldown 3m
+    when day_volume >= 1_000_000
+     and last >= 10
+     and (last - prev_close) / atr >= 1.25
+     and (last - low(60m)) / atr >= 1.0
+     and volume(15m) < volume(15m, 1)
+     and high(5m) >= prev_high
+     and rsi(5m, 14) >= 70
+}
+
+# §4.32 Mirror of §4.31.
+trigger Quiet_Reversal_Down {
+    side short
+    screen top
+    cooldown 3m
+    when day_volume >= 1_000_000
+     and last >= 10
+     and (prev_close - last) / atr >= 1.25
+     and (high(60m) - last) / atr >= 1.0
+     and volume(15m) < volume(15m, 1)
+     and low(5m) <= prev_low
+     and rsi(5m, 14) <= 30
+}
