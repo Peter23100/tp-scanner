@@ -1,0 +1,28 @@
+# Shared fields and conditions for writing new filters: the Trade Ideas-style measures and the
+# "just crossed" events. Reference and examples: filters/LANGUAGE.md. Nothing here is used by the
+# translated Primus filters, so adding or changing one can't move their fire counts.
+
+# --- Trade Ideas-style fields (percent values are percent: 3 means 3%) ------------------------
+
+field chg_close_pct = (last - prev_close) / prev_close * 100         # TI Change from Close (%)
+field gap_pct = (open - prev_close) / prev_close * 100               # TI Gap (%)
+field chg_open_pct = (last - open) / open * 100                      # TI Change from Open (%)
+field pos_in_range = (last - day_low) / (day_high - day_low) * 100   # TI Position in Range
+field pos_in_5m_range = (last - low(5m)) / (high(5m) - low(5m)) * 100 # TI Position in 5 Minute Range
+field range_5m_pct = (high(5m) - low(5m)) / last * 100               # TI 5 Minute Range (%)
+field vwap_dist_pct = (last - vwap) / vwap * 100                     # TI Distance from VWAP (%)
+field float_rotation = day_volume_ext / float                        # TI Float Rotation
+field pos_in_bb = (last - bb_lower(5m, 20, 2)) / (bb_upper(5m, 20, 2) - bb_lower(5m, 20, 2)) * 100
+
+# --- The shared universe gate ------------------------------------------------------------------
+
+# One place to say what "tradeable" means. NOT yet used by the Primus translations: adding it to
+# them is a deliberate change, one filter at a time, once replays show what it removes.
+condition tradeable = last >= 2 and last <= 500
+                  and day_volume_ext >= 300_000
+                  and atr >= 0.25
+
+# --- Events made from levels (state -> moment) -------------------------------------------------
+
+condition crossed_above_vwap = last >= vwap and low(1m, 1) < vwap and high(1m, 2) < vwap
+condition crossed_below_vwap = last <= vwap and high(1m, 1) > vwap and low(1m, 2) > vwap

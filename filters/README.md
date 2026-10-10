@@ -1,7 +1,9 @@
 # Filters
 
-The Primus filters, hand-translated from `spec/primus/Primus_Filters_MASTER_2026-09-24.md` into the
-scanner's language (`crates/tp-scan-engine/src/lang.rs` documents the syntax).
+The Primus filters, hand-translated from `spec/primus/Primus_Filters_MASTER_2026-09-25.md` into the
+scanner's language. **`LANGUAGE.md` is the reference for writing and changing filters**: every
+building block, Primus and Trade Ideas equivalents, and a cookbook. `CHANGES.md` records every
+filter change and why.
 
 | file | what | count |
 |---|---|---|
@@ -10,6 +12,7 @@ scanner's language (`crates/tp-scan-engine/src/lang.rs` documents the syntax).
 | `right.scan` | hold and breakout families (§4.11–§4.24) | 14 |
 | `top.scan` | flushes and reversals (§4.27–§4.32) | 6 |
 | `statics.scan` | movers, PM coils, imbalances, halts, NYSE IND (§5) | 12 |
+| `common.scan` | shared fields and conditions for new filters (Trade Ideas-style measures, `tradeable`, VWAP crosses); not used by the translations | 9 + 3 |
 
 `cargo test -p tp-scan-engine --test primus_filters` parses and compiles all of them and runs
 scenario checks (a ramp fires M_Spike_Up; a ramp that holds fires M_Spike_Hold_Up; one that
@@ -112,7 +115,9 @@ re-derive thresholds under these semantics.
 
 ## Not applied: the fix queue (§7)
 
-Only the items above that the engine fixes by construction. Everything else in §7 (Movers 0.75% →
+Only the items above that the engine fixes by construction, plus item 18 (the split-immune volume
+leg), which arrived in the master itself as the 2026-09-25 LowFloat_HOD_Break_Up rebuild. Everything
+else in §7 (Movers 0.75% →
 2%, `TickTime` gates on Open_Flush and PM_Coil, the Breakout_Hold gap leg, propagating the VWAP cap
 or break margin, normalising field scales) is a decision to make once the translation runs on
 history and can be compared, one change at a time.

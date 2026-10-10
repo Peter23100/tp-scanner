@@ -15,6 +15,9 @@ never holds broker credentials and never touches the order path.**
 | `crates/tp-scan-engine` | per-symbol state, measurement catalog, the filter language (`lang.rs`), evaluator (memo + explain), scan loop with triggers and ranked lists, JSONL instrumentation |
 | `crates/tp-scan-cli` | the `tp-scan` binary: `check` filter files, `replay` history through them |
 | `filters/` | the Primus filters and custom fields, translated. `filters/README.md` has the translation rules, what's missing, and where results will differ from Primus on purpose |
+| `filters/LANGUAGE.md` | **how to write filters**: every building block, Primus and Trade Ideas equivalents, a cookbook |
+| `filters/CHANGES.md` | every filter change, dated, with the reason |
+| `examples/` | example filters from the cookbook; compiled by the tests, never loaded to run |
 | `spec/primus/` | the user's Primus filter master (verbatim) and screenshots of the four screens |
 | `tools/parity` | the TradierPro chart math (verbatim JS snapshot) and the generator for the expected outputs the Rust port is tested against |
 
@@ -65,7 +68,7 @@ No market-data subscription yet; everything runs on fixtures and synthetic data.
   stage-4 instrumentation (every evaluation's measurement vector as JSONL), and the `tp-scan`
   replay CLI.
 - **Translated:** 42 Primus filters and all 21 custom fields (`filters/`), compiled and
-  scenario-tested. Waiting on verbatim expressions: the 14 Contras, Breakout_Hold,
+  scenario-tested, current to the master's 2026-09-25 version. Waiting on verbatim expressions: the 14 Contras, Breakout_Hold,
   PM_LowFloat_Coil_Up, plain Halted, CatchALL_LF_HOD. The RVOL / PM_RVOL curves were rebuilt from
   the master's table and prose and need checking against the pasted IF chains.
 - **Measured** (`cargo run --release -p tp-scan-engine --example throughput [-- filters]`): 5,000

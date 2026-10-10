@@ -1,0 +1,62 @@
+# Example filters from filters/LANGUAGE.md §6, verbatim (the language_doc test checks they match).
+# NOT loaded with filters/, so they never fire. To use one, copy it into a filters/*.scan file and
+# give it a new name. Thresholds are illustrative, not tuned.
+
+trigger Ex_Running_Up {
+    side long
+    screen recipes
+    cooldown 3m
+    when tradeable
+     and up5 >= max(0.30, last * 0.015)
+     and volume(5m) >= volume(5m, 1) * 2
+     and new_high(5m)
+}
+
+trigger Ex_New_HOD {
+    side long
+    screen recipes
+    cooldown 5m
+    when tradeable
+     and new_high(30m)
+     and last >= day_high - 0.02
+     and chg_close_pct >= 3
+}
+
+trigger Ex_Consolidation_Breakout {
+    side long
+    screen recipes
+    cooldown 10m
+    when tradeable
+     and (high(30m, 1) - low(30m, 1)) <= 0.5 * atr
+     and last >= high(30m, 1) + 0.05 * atr
+     and volume(5m) >= volume(30m, 1) / 6 * 2
+     and new_high(5m)
+}
+
+trigger Ex_Pullback_From_High {
+    side long
+    screen recipes
+    cooldown 15m
+    when tradeable
+     and chg_close_pct >= 5
+     and last <= day_high * 0.97
+     and last >= vwap
+     and new_low(5m)
+}
+
+list Ex_Top_Gainers {
+    side long
+    screen recipes
+    rank RNK_UP
+    show chg_close_pct, RVOL20DAYTIMEADJUSTED, pos_in_range
+    when tradeable and chg_close_pct >= 4
+}
+
+list Ex_PM_Gappers {
+    side long
+    screen recipes
+    hours pre
+    rank PM_RVOL
+    show chg_close_pct, PM_RVOL, float_rotation
+    when last >= 1 and chg_close_pct >= 10 and pm_volume >= 100_000
+}
