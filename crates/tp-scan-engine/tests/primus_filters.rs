@@ -15,7 +15,7 @@ use tp_marketdata::time::{SessionDate, Ts};
 use tp_scan_engine::compile::{Kind, Side, Tri};
 use tp_scan_engine::engine::{Engine, VecSink};
 use tp_scan_engine::lang::load_dir;
-use tp_scan_engine::state::DailyRef;
+use tp_scan_engine::state::{DailyRef, Reference};
 
 fn filters_dir() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../filters")
@@ -213,4 +213,54 @@ fn rvol_follows_the_curve() {
     let (e, _) = run(quiet_open("SNDK"), "SNDK");
     let text = e.explain("M_Spike_Up", "SNDK").unwrap().to_string();
     assert!(text.contains("RVOL20DAYTIMEADJUSTED = 2"), "{text}");
+}
+
+/// The MSGY shape (master §4.21, rebuilt 2026-09-25): a dormant $2 low-float with a 0.12 ATR wakes
+/// up and runs. Every bar closes 3 cents under its high, so the old `day_high - 0.15 * atr`
+/// tolerance (under 2 cents) blocked it; the rebuilt `0.15 * day_range` tolerance doesn't.
+fn low_float_runner(sym: &str, float_shares: f64) -> (Engine, VecSink) {
+    let mut e = engine();
+    let d = DailyRef {
+        atr: Some(Price::new(0.12)),
+        adv: Some(300_000.0),
+        ..DailyRef::bare(SessionDate(day()), Price::new(2.0))
+    };
+    e.set_daily(sym, d);
+    e.set_reference(sym, Reference { float_shares: Some(float_shares) });
+    let mut sink = VecSink::default();
+    // One 07:00 premarket print (so the feed covers the 120-minute window), then 09:30–09:59
+    // drifts 2.00 -> 2.87 on 30k a minute, and 10:00–10:09 runs 2.90 -> 3.80 on 60k then 100k.
+    let mut evs = vec![bar(sym, 7, 0, 2.0, 2.0, 2.0, 2.0, 5_000.0)];
+    for i in 0..30 {
+        let c = 2.0 + 0.03 * i as f64;
+        evs.push(bar(sym, 9, 30 + i, c - 0.01, c + 0.03, c - 0.02, c, 30_000.0));
+    }
+    for i in 0..10 {
+        let c = 2.9 + 0.1 * i as f64;
+        let v = if i < 5 { 60_000.0 } else { 100_000.0 };
+        evs.push(bar(sym, 10, i, c - 0.08, c + 0.03, c - 0.09, c, v));
+    }
+    for ev in &evs {
+        e.on_event(ev, &mut sink);
+    }
+    assert!(sink.errors.is_empty(), "{:?}", sink.errors);
+    (e, sink)
+}
+
+#[test]
+fn the_rebuilt_low_float_runner_fires_on_a_tiny_atr_name() {
+    let (_, s) = low_float_runner("MSGY", 1_500_000.0);
+    let fires = fired(&s, "LowFloat_HOD_Break_Up");
+    // The 09:30 drift (+1.5% a minute) already qualifies by ~09:47; every bar closes 3 cents off
+    // its high, more than the old 0.15 x ATR (1.8 cents) allowed.
+    assert!(!fires.is_empty(), "should fire during the run");
+}
+
+#[test]
+fn the_low_float_runner_ignores_a_big_float() {
+    let (e, s) = low_float_runner("BIGF", 50_000_000.0);
+    assert!(fired(&s, "LowFloat_HOD_Break_Up").is_empty());
+    let ex = e.explain("LowFloat_HOD_Break_Up", "BIGF").unwrap();
+    let blocking: Vec<String> = ex.blocking().iter().map(|n| n.label.clone()).collect();
+    assert!(blocking.iter().any(|l| l.contains("float")), "{blocking:?}");
 }

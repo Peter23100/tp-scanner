@@ -223,8 +223,12 @@ trigger M8_GrindDown {
      and new_low(5m)
 }
 
-# §4.21 A low-float stock up big and breaking to new highs on heavy volume. No base: the
-# parabolic runner filter. Primus `FloatShares <= 20` is millions.
+# §4.21 A low-float stock that has moved hard today, breaking to new highs on expanding volume.
+# No base: the parabolic runner filter. Primus `FloatShares <= 20` is millions.
+# REBUILT 2026-09-25 (MSGY, ELPW missed): no `atr` and no `adv` anywhere, only same-session data
+# plus float and the prior close, so a stale ATR or a split-inflated ADV can't block it. The
+# day-high tolerance is 15% of today's range; the completed 5-minute bar's 2% range is the dial
+# if the list runs long.
 trigger LowFloat_HOD_Break_Up {
     side long
     screen right
@@ -232,11 +236,13 @@ trigger LowFloat_HOD_Break_Up {
     when float <= 20_000_000
      and prev_close >= 0.25
      and prev_close <= 50
-     and day_volume_ext >= 250_000
-     and (last - prev_close) / prev_close >= 0.10
-     and last >= day_high - 0.15 * atr
-     and (RVOL20DAYTIMEADJUSTED >= 3.0 or volume(5m) * 24 >= volume(120m) * 3.0)
-     and (volume(5m, 1) >= volume(5m, 2) * 1.5 or volume(5m, 1) >= adv * 0.05)
+     and day_volume_ext >= 500_000
+     and (last - prev_close) / prev_close >= 0.20
+     and day_range >= last * 0.10
+     and last >= day_high - 0.15 * day_range
+     and spike_range >= last * 0.02
+     and (volume(5m, 1) >= volume(5m, 2) * 1.5 or volume(5m, 1) >= day_volume * 0.03)
+     and volume(5m) * 24 >= volume(120m) * 3.0
      and new_high(5m)
 }
 

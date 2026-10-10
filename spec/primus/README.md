@@ -4,7 +4,7 @@ What the scanner replaces, captured before the subscription lapses (~May 2027).
 
 | file | what |
 |---|---|
-| `Primus_Filters_MASTER_2026-09-24.md` | Every filter, static list and custom field, verbatim as loaded, with clause notes, the regression set and the fix queue. Copied unchanged from the user's master (file name says 09-05; its header says version 2026-09-24). **The source of truth for `filters/`.** |
+| `Primus_Filters_MASTER_2026-09-25.md` | Every filter, static list and custom field, verbatim as loaded, with clause notes, the regression set and the fix queue. Copied unchanged from the user's master (file name says 09-05; its header says version 2026-09-24, and it carries the 2026-09-25 LowFloat_HOD_Break_Up rebuild and the set-wide stale-reference note in §4A). **The source of truth for `filters/`.** |
 | `screens/*.png` | The four Primus screens as laid out on 2026-09-25: which panels exist, their columns, green = long / red = short, statics carry a member count, charts are link-grouped to panels. The reference for the display side. |
 
 Screens:

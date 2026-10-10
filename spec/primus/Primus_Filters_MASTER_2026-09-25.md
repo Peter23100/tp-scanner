@@ -977,60 +977,84 @@ the daily EMA20, prior bar's high below VWAP.
 
 ---
 
-### §4.21 LowFloat_HOD_Break_Up ✅ verified 2026-09-23
+### §4.21 LowFloat_HOD_Break_Up 🔄 REBUILT 2026-09-25
 
-**Hunts:** a low-float stock up big and breaking to new highs on heavy volume.
-**No base requirement** — this is the parabolic runner filter.
+**Hunts:** a low-float stock that has moved hard today and is breaking to new
+highs on expanding volume. **No base requirement** — the parabolic runner filter.
 
 ```
 FloatShares <= 20
 AND AdjustedClosePrice(P1) >= 0.25
 AND AdjustedClosePrice(P1) <= 50
-AND DayVolume(ALL_VENUES, 1, CURRENT, YES) >= 250000
-AND ( Last(ALL_VENUES, CURRENT, NO) - ClosePrice(PRIMARY, P1, NO) ) / ClosePrice(PRIMARY, P1, NO) >= 0.10
-AND Last(ALL_VENUES, CURRENT, NO) >= DayHigh(ALL_VENUES, 1, CURRENT, NO) - 0.15 * ATRStock(ALL_VENUES, NO, DAILY, 14, CURRENT)
-AND ( RVOL20DAYTIMEADJUSTED >= 3.0 OR MinuteVolume(ALL_VENUES, 5, CURRENT, NO) * 24 >= MinuteVolume(ALL_VENUES, 120, CURRENT, NO) * 3.0 )
+AND DayVolume(ALL_VENUES, 1, CURRENT, YES) >= 500000
+AND ( Last(ALL_VENUES, CURRENT, NO) - ClosePrice(PRIMARY, P1, NO) ) / ClosePrice(PRIMARY, P1, NO) >= 0.20
+AND ( DayHigh(ALL_VENUES, 1, CURRENT, NO) - DayLow(ALL_VENUES, 1, CURRENT, NO) ) >= Last(ALL_VENUES, CURRENT, NO) * 0.10
+AND Last(ALL_VENUES, CURRENT, NO) >= DayHigh(ALL_VENUES, 1, CURRENT, NO) - 0.15 * ( DayHigh(ALL_VENUES, 1, CURRENT, NO) - DayLow(ALL_VENUES, 1, CURRENT, NO) )
+AND ( MinuteHigh(ALL_VENUES, 5, P1, NO, False) - MinuteLow(ALL_VENUES, 5, P1, NO, False) ) >= Last(ALL_VENUES, CURRENT, NO) * 0.02
 AND ( MinuteVolume(ALL_VENUES, 5, P1, NO) >= MinuteVolume(ALL_VENUES, 5, P2, NO) * 1.5
-      OR MinuteVolume(ALL_VENUES, 5, P1, NO) >= AvgDayVolume(ALL_VENUES, 20, NO) * 0.05 )
+      OR MinuteVolume(ALL_VENUES, 5, P1, NO) >= DayVolume(ALL_VENUES, 1, CURRENT, NO) * 0.03 )
+AND MinuteVolume(ALL_VENUES, 5, CURRENT, NO) * 24 >= MinuteVolume(ALL_VENUES, 120, CURRENT, NO) * 3.0
 AND NewMinuteHigh(5, NO)
 AND MaxTriggersCount(MINUTES, 5, 1)
 ```
 
-**Rebuilt 2026-08-17** from a base-break filter into a runner filter. The base
-block was deleted because WFF (+469%) never made one — *a coil-based filter
-cannot catch a move that never pauses.*
+#### ⭐ The organising principle: NO STALE REFERENCES
 
-**Changed since 09-05:** float 10M → **20M**, price floor $1.00 → **$0.25**, and
-a **today's-volume gate** added: `DayVolume(ALL_VENUES, 1, CURRENT, YES) >=
-250000`. Peter notes this filter has been revised several times.
+**There is no `ATRStock` and no `AvgDayVolume` anywhere in this filter.** Only
+same-session data, plus float and the prior close. That removes both documented
+distortions at once, and both of them hit *precisely* this filter's target
+population:
 
-**⭐ The today's-volume gate is the right structure**, matching §5.3. It replaces
-what an `AvgDayVolume` floor would do, without excluding dormant low-floats — a
-stock that normally trades nothing qualifies provided it is genuinely trading
-today, premarket included. That is the WFF/VRME lesson applied.
+**Stale ATR.** A dormant low-float that just woke has a tiny ATR. MSGY sat
+between 1.73 and 2.05 for months (ATR ≈ 0.12); ELPW near 2.4–2.8 (≈ 0.20). The
+old clause `Last >= DayHigh − 0.15 × ATRStock` therefore allowed **two to three
+cents** of room — demanding price be essentially *exactly* at the day high, while
+`NewMinuteHigh(5)` fires on five-minute highs that are not necessarily day highs.
+The two coincided only in a narrow window.
 
-**Deliberate extended-hours mix:** `NO` on price and the day-high clause since
-the trigger is regular-hours; `YES` on `DayVolume` so premarket counts toward the
-gate.
+**Split-inflated ADV.** PFSA's 1-for-4 reverse split inflated `AvgDayVolume(20)`
+~4×. ELPW shows a 54,972 print on its daily chart — a reverse-split artefact —
+so its historical prices are adjusted while volumes are documented to be handled
+inconsistently. Every ADV-normalised clause is wrong by the split ratio on such a
+name.
 
-**⚠️ Still no split-immune volume leg.** Two problems with the
-`AvgDayVolume(20) * 0.05` leg for this filter's target population:
-- For a dormant low-float with 50k ADV, 5% is **2,500 shares** in a five-minute
-  bar — trivially passed, so the leg discriminates nothing among exactly the
-  names it should.
-- After PFSA's 1-for-4 reverse split (2026-08-18), `AvgDayVolume(20)` was inflated
-  ~4× by unadjusted historical share counts, making the same leg ~4× too strict on
-  a name that had just done +449%.
+#### Clause notes
 
-The fix proposed 2026-08-18 was never added — see fix queue item 18:
-```
-OR MinuteVolume(ALL_VENUES, 5, P1, NO) >= DayVolume(ALL_VENUES, 1, CURRENT, NO) * 0.03
-```
-Both sides same-session, so no historical adjustment can distort it.
+**Day-high tolerance normalised to TODAY'S RANGE:**
+`DayHigh − 0.15 × ( DayHigh − DayLow )`. Self-scaling to actual movement — about
+60 cents of room on MSGY instead of 2 cents, and automatically tight on a stock
+that has not moved.
 
-**⚠️ `FloatShares` is a real gate here** (unlike §5.6, where the old `Float <=
-10000000` form is inert). Whether it populates for foreign small-cap issuers is
-unverified, and WFF and PFSA are exactly the names targeted.
+**Day range ≥ 10% of price** — the stock genuinely moved today rather than just
+gapping and sitting.
+
+**Last completed 5-min bar ≥ 2% of price** — it is moving *now*, not drifting up.
+**This is the dial** if the list runs long.
+
+**Volume is fully self-referential.** The ADV leg became
+`DayVolume(CURRENT) × 0.03` — the split-immune form proposed 2026-08-18 after
+PFSA and never added until now. The burst leg is mandatory since RVOL was dropped
+entirely.
+
+#### History
+
+**Rebuilt 2026-08-17** from a base-break filter into a runner filter — the base
+block was deleted because WFF (+469%) never made one: *a coil-based filter cannot
+catch a move that never pauses.*
+
+**Rebuilt again 2026-09-25** after MSGY (+202%) and ELPW (+65%) were both missed
+on consecutive days while clearing every clause on paper. A bisection test with
+only the universe gates showed every small low-float move, confirming the blocker
+sat in the removed half.
+
+> **Three wrong Claude hypotheses preceded the fix**, each disproven by a fact
+> Peter supplied: missing `FloatShares` for a foreign issuer (float was under
+> 2M), the unverified `DayVolume(..., YES)` flag (23M shares traded), and the
+> filter not being loaded (it was). Bisection found it; theorising did not.
+
+**⚠️ `FloatShares` is a real gate here** — unlike §5.6, where the old
+`Float <= 10000000` form is inert. Whether it populates for foreign small-cap
+issuers is still unverified, though MSGY returned a usable value.
 
 ---
 
@@ -1593,6 +1617,33 @@ large-cap suite in three pairs covering setups the runner filters don't touch:
    Breakout_Hold pair, M3/M4. Peter independently identified it as
    self-defeating on trending days; it was removed from the six for that reason.
 
+### ⭐ The stale-reference problem — applies set-wide
+
+Two reference values are measured over a historical window and are **wrong
+exactly when a stock does something interesting**:
+
+**`ATRStock`** on a dormant stock that just woke is a pre-event number. Any
+clause of the form `X × ATRStock` is correspondingly tiny. Documented: the
+day-high tolerance in LowFloat_HOD_Break_Up gave 2-3 cents on MSGY and ELPW
+(§4.21); MU showed an $85 ATR and CRWD $53 on a $188 stock after splits.
+
+**`AvgDayVolume(20)`** is inflated by the split ratio when historical volumes are
+not adjusted alongside prices. Documented: PFSA 1-for-4 (≈4× inflation, 2026-08-18);
+ELPW's reverse split (54,972 print on the daily chart).
+
+**Both distortions hit the same population** — low-float runners, post-split
+names, stocks waking from dormancy. That is the population the low-float and
+sharp-move families exist to find.
+
+**The fix pattern, proven in §4.21:** normalise to same-session data instead.
+`DayHigh − DayLow` replaces ATR for position tolerance; `DayVolume(CURRENT) × k`
+replaces `AvgDayVolume × k` for bar-volume tests. Neither can be distorted by a
+corporate action or by a quiet trailing period.
+
+**Candidates for the same treatment:** every `AvgDayVolume`-normalised volume leg
+in the hold and breakout families, and `Spike_Vol_Pct` (§2), which reads ~4× too
+low on a recently split name.
+
 ### Clauses worth propagating
 
 Two good ideas currently trapped in single filters:
@@ -1913,7 +1964,7 @@ Collection is complete. This replaces the checklist.
 | 15 | Rewrite two-band ATR tiers using `IF()` | `displacement / ATRStock >= IF( ATRStock/ClosePrice(P1) >= 0.03, 0.50, 0.80 )` — roughly **halves** each sharp-move filter and removes most paren nesting |
 | 16 | Build `RVOL_Recent` from the RVOL curve's slopes | A true time-local relative-volume measure, immune to the cumulative dilution behind five missed trades. Replaces the burst-leg workaround with something interpretable |
 | 17 | Apply the hand-rolled rolling window to sharp-move displacement | Summing N 1-minute bars back from `CURRENT` defeats clock-aligned splitting — the technique already exists in two of Peter's own expressions |
-| 18 | Add the split-immune volume leg | `MinuteVolume(5,P1) >= DayVolume(CURRENT) * 0.03` — LowFloat_HOD_Break_Up; proposed 2026-08-18 after PFSA, never added |
+| 18 | ✅ **DONE 2026-09-25** — split-immune volume leg added, and `AvgDayVolume`/`ATRStock` removed entirely | LowFloat_HOD_Break_Up (§4.21). Apply the same pattern to the hold and breakout families |
 | 19 | Give Base_Break_Hold the thrust block Breakout_Hold already has | Addresses the PFG cause rather than the symptom |
 | 20 | Replace the `DayLow >= ClosePrice(P1)` proxy with a real `DayBar_Open` test | §4.23 — the proxy was chosen only because `DayBar_Open` was believed broken |
 | 21 | Normalise field scales | 17 fields use `× 100`, 4 do not; `ATR_POS` shows 50 where `VWAP_Stretch` shows 0.5 for the same magnitude |
