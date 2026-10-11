@@ -1,14 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Every scanner window: the launcher, the screens and the charts",
-  "windows": ["launcher", "screen-*", "chart-*"],
+  "description": "Every scanner window: the launcher, the panels and the charts",
+  "windows": ["launcher", "panel-*", "chart-*", "dialog-*"],
   "permissions": [
     "core:default",
     "core:webview:default",
     "core:window:default",
     "core:webview:allow-create-webview-window",
     "core:window:allow-set-size",
+    "core:window:allow-set-title",
     "core:window:allow-set-focus",
     "core:window:allow-close",
     "core:event:default"

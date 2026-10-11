@@ -1,9 +1,12 @@
-// One panel: a trigger feed (newest first, older rows dimmed) or a ranked list.
+// One panel window: a trigger feed (newest first, older rows dimmed) or a ranked list.
 // Click a symbol: every chart of the panel's link colour shows it.
-// Right-click a row: why does (or doesn't) this filter fire on this symbol right now.
+// Right-click anywhere: the panel menu (link colour, follow, sound, filters, why isn't X firing,
+// adjust a filter). On a row, the menu starts from that row's symbol and filter.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, FilterMeta, fmtNum, Item, LINK_HEX, nextColor, SignalDto } from "./api";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { api, FilterMeta, fmtNum, LINK_HEX, nextColor, PanelDef, SignalDto } from "./api";
 import { useStore } from "./store";
+import { FiltersBox, MenuAt, PanelMenu, RenameBox } from "./Menu";
 
 const MAX_ROWS = 200;
 /// Rows newer than this (market time) are bright; older are dimmed, as in Primus.
@@ -27,26 +30,37 @@ function beep(side: string) {
   }
 }
 
-function loadFlag(key: string): boolean {
-  try {
-    return localStorage.getItem(key) === "1";
-  } catch {
-    return false;
-  }
+export function panelTitle(p: PanelDef): string {
+  return p.title || p.filters.join(" | ") || "Empty panel";
 }
 
-export default function Panel({ panelKey, item, meta, color: initial }: { panelKey: string; item: Item; meta: Map<string, FilterMeta>; color: string }) {
-  const [color, setColor] = useState(initial);
-  const [explain, setExplain] = useState<{ filter: string; symbol: string; text: string } | null>(null);
-  const soundKey = `sound:${panelKey}`;
-  const [sound, setSound] = useState(() => loadFlag(soundKey));
-  const filters = item.filters;
+export function PanelWindow({ id }: { id: string }) {
+  const panels = useStore((s) => s.panels);
+  const filters = useStore((s) => s.filters);
+  const meta = useMemo(() => new Map(filters.map((f) => [f.name, f])), [filters]);
+  const def = panels?.panels.find((p) => p.id === id);
+  useEffect(() => {
+    // The OS title bar (and taskbar) doesn't follow document.title in Tauri: set both.
+    if (!def) return;
+    document.title = panelTitle(def);
+    getCurrentWindow().setTitle(panelTitle(def)).catch(() => {});
+  }, [def]);
+  if (!panels) return <div className="dk-empty">loading…</div>;
+  if (!def) return <div className="dk-empty bad">This panel was deleted. Close the window.</div>;
+  return <Panel def={def} meta={meta} filters={filters} />;
+}
+
+export default function Panel({ def, meta, filters: allFilters }: { def: PanelDef; meta: Map<string, FilterMeta>; filters: FilterMeta[] }) {
+  const [menu, setMenu] = useState<MenuAt | null>(null);
+  const [box, setBox] = useState<null | "rename" | "filters">(null);
+  const filters = def.filters;
+  const color = def.link;
   const metas = filters.map((f) => meta.get(f)).filter((m): m is FilterMeta => !!m);
+  const missing = meta.size > 0 ? filters.filter((f) => !meta.has(f)) : [];
   const isList = metas.length > 0 && metas.every((m) => m.kind === "list");
   const sides = new Set(metas.map((m) => m.side));
   const tone = sides.size === 1 ? [...sides][0] : "neutral";
   const multi = filters.length > 1;
-  const title = item.title ?? filters.join(" | ");
   const extra = useMemo(() => [...new Set(metas.flatMap((m) => m.columns))], [metas]);
 
   const signals = useStore((s) => s.signals);
@@ -67,94 +81,71 @@ export default function Panel({ panelKey, item, meta, color: initial }: { panelK
   const lastId = useRef<number | null>(null);
   useEffect(() => {
     const top = rows[0];
-    if (top && lastId.current !== null && top.id > lastId.current && sound && mode === "live") beep(top.side);
+    if (top && lastId.current !== null && top.id > lastId.current && def.sound && mode === "live") beep(top.side);
     lastId.current = top ? top.id : lastId.current ?? 0;
-  }, [rows, sound, mode]);
-  const toggleSound = () => {
-    setSound(!sound);
-    try {
-      localStorage.setItem(soundKey, sound ? "0" : "1");
-    } catch {
-      /* not persisted */
-    }
-  };
+  }, [rows, def.sound, mode]);
 
+  const update = (patch: Partial<PanelDef>) => api.panelUpdate({ ...def, ...patch }).catch(() => {});
   const listRows = isList ? filters.flatMap((f) => (lists[f] ?? []).map((r) => ({ ...r, filter: f }))) : [];
 
   const pick = (symbol: string) => api.linkSet(color, symbol).catch(() => {});
-  const why = (filter: string, symbol: string) => {
-    api
-      .explain(filter, symbol)
-      .then((text) => setExplain({ filter, symbol, text }))
-      .catch((e) => setExplain({ filter, symbol, text: String(e) }));
+  const openMenu = (e: React.MouseEvent, symbol?: string, filter?: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setMenu({ x: e.clientX, y: e.clientY, symbol, filter });
   };
-  const cycle = () => {
-    const c = nextColor(color);
-    setColor(c);
-    api.setPanelLink(panelKey, c).catch(() => {});
-  };
+  const symClass = (side: string) => "sym " + (side === "long" ? "up" : side === "short" ? "dn" : "");
 
   return (
-    <div className={`panel tone-${tone}`}>
+    <div className={`panel tone-${tone}`} onContextMenu={(e) => openMenu(e)}>
       <div className="phead">
         <span className="ptitle" title={filters.map((f) => describe(meta.get(f))).join("\n")}>
-          {title}
-          {isList && <span className="count"> #{listRows.length}</span>}
+          {panelTitle(def)}
         </span>
+        <span className="pcount">{isList ? listRows.length : rows.length}</span>
         {!isList && (
-          <button className={"bell " + (sound ? "on" : "")} title={sound ? "sound on new fires (live): on" : "sound on new fires (live): off"} onClick={toggleSound}>
-            {sound ? "♪" : "·"}
+          <button className={"bell " + (def.sound ? "on" : "")} title={def.sound ? "sound on new fires (live): on" : "sound on new fires (live): off"} onClick={() => update({ sound: !def.sound })}>
+            {def.sound ? "♪" : "·"}
           </button>
         )}
-        <button className="link" style={{ background: LINK_HEX[color] }} title={`linked to ${color} charts${linked ? ` (${linked})` : ""}: click to change`} onClick={cycle} />
+        <button className="link" style={{ background: LINK_HEX[color] }} title={`linked to ${color} charts${linked ? ` (${linked})` : ""}: click to change`} onClick={() => update({ link: nextColor(color) })} />
       </div>
+      {missing.length > 0 && <div className="pwarn">not loaded: {missing.join(", ")}</div>}
+      {filters.length === 0 && <div className="dk-empty">No filters in this panel yet. Right-click → Filters in this panel…</div>}
       <div className="pbody">
         <table>
           <thead>
             <tr>
-              {isList ? (
-                <>
-                  <th>Symbol</th>
-                  {multi && <th>Filter</th>}
-                  <th>Last</th>
-                  {extra.map((c) => (
-                    <th key={c}>{c}</th>
-                  ))}
-                  <th>Since</th>
-                </>
-              ) : (
-                <>
-                  <th>Time</th>
-                  <th>Symbol</th>
-                  {multi && <th>Filter</th>}
-                  <th>Last</th>
-                  {extra.map((c) => (
-                    <th key={c}>{c}</th>
-                  ))}
-                </>
-              )}
+              {!isList && <th>Time</th>}
+              <th>Symbol</th>
+              {multi && <th>Filter</th>}
+              <th>Last</th>
+              {extra.map((c) => (
+                <th key={c}>{c}</th>
+              ))}
+              {isList && <th>Since</th>}
             </tr>
           </thead>
           <tbody>
             {isList
               ? listRows.map((r) => (
-                  <tr key={r.filter + r.symbol} className={r.symbol === linked ? "sel" : ""} onClick={() => pick(r.symbol)} onContextMenu={(e) => (e.preventDefault(), why(r.filter, r.symbol))}>
-                    <td className="sym">{r.symbol}</td>
-                    {multi && <td>{r.filter}</td>}
+                  <tr key={r.filter + r.symbol} className={r.symbol === linked ? "sel" : ""} onClick={() => pick(r.symbol)} onContextMenu={(e) => openMenu(e, r.symbol, r.filter)}>
+                    <td className={symClass(meta.get(r.filter)?.side ?? "")}>{r.symbol}</td>
+                    {multi && <td className="fname">{r.filter}</td>}
                     <td>{fmtNum(r.last)}</td>
                     {extra.map((c) => (
                       <td key={c}>{fmtNum(r.columns.find((x) => x[0] === c)?.[1])}</td>
                     ))}
-                    <td>{r.since}</td>
+                    <td className="tm">{r.since}</td>
                   </tr>
                 ))
               : rows.map((s) => {
                   const fresh = marketMs == null || marketMs - s.at_ms < FRESH_MS;
                   return (
-                    <tr key={s.id} className={(fresh ? "" : "old ") + (s.symbol === linked ? "sel" : "")} onClick={() => pick(s.symbol)} onContextMenu={(e) => (e.preventDefault(), why(s.filter, s.symbol))}>
-                      <td>{s.time}</td>
-                      <td className="sym">{s.symbol}</td>
-                      {multi && <td>{s.filter}</td>}
+                    <tr key={s.id} className={(fresh ? "" : "old ") + (s.symbol === linked ? "sel" : "")} onClick={() => pick(s.symbol)} onContextMenu={(e) => openMenu(e, s.symbol, s.filter)}>
+                      <td className="tm">{s.time}</td>
+                      <td className={symClass(s.side)}>{s.symbol}</td>
+                      {multi && <td className="fname">{s.filter}</td>}
                       <td>{fmtNum(s.last)}</td>
                       {extra.map((c) => (
                         <td key={c}>{fmtNum(s.columns.find((x) => x[0] === c)?.[1])}</td>
@@ -165,18 +156,9 @@ export default function Panel({ panelKey, item, meta, color: initial }: { panelK
           </tbody>
         </table>
       </div>
-      {explain && (
-        <div className="explain" onClick={() => setExplain(null)}>
-          <div className="explain-box" onClick={(e) => e.stopPropagation()}>
-            <div className="explain-head">
-              {explain.filter} on {explain.symbol}, now
-              <button onClick={() => why(explain.filter, explain.symbol)}>refresh</button>
-              <button onClick={() => setExplain(null)}>close</button>
-            </div>
-            <pre>{explain.text}</pre>
-          </div>
-        </div>
-      )}
+      {menu && <PanelMenu at={menu} def={def} onClose={() => setMenu(null)} onRename={() => setBox("rename")} onFilters={() => setBox("filters")} />}
+      {box === "rename" && <RenameBox def={def} onClose={() => setBox(null)} />}
+      {box === "filters" && <FiltersBox def={def} filters={allFilters} onClose={() => setBox(null)} />}
     </div>
   );
 }

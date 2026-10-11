@@ -1,4 +1,4 @@
-// The backend's commands and events, typed. Mirrors app/src-tauri/src/{main,scanner,layout}.rs.
+// The backend's commands and events, typed. Mirrors app/src-tauri/src/{main,scanner,layout,panels}.rs.
 import { invoke } from "@tauri-apps/api/core";
 
 export type Side = "long" | "short" | "neutral";
@@ -56,37 +56,93 @@ export interface FilterMeta {
   cooldown_s: number;
   columns: string[];
   ranked: boolean;
+  basket: string | null;
 }
 
-export interface Item {
+/** A named basket (filters/baskets.scan): `ranges` are [key, min, max]. */
+export interface BasketDto {
+  name: string;
+  types: string[];
+  exchanges: string[];
+  ranges: [string, number | null, number | null][];
+  used_by: string[];
+}
+export interface BasketCount {
+  pass: number;
+  fail: number;
+  unknown: number;
+  top: [string, number][];
+  as_of: string;
+}
+
+/** One panel window (panels.rs). */
+export interface PanelDef {
+  id: string;
   title?: string | null;
   filters: string[];
-  link?: string | null;
-  chart?: string | null;
-  height: number;
+  link: string;
+  follow: boolean;
+  sound: boolean;
+  group: string;
+  tile?: [number, number, number, number] | null;
 }
-export interface Column {
-  width: number;
-  items: Item[];
+export interface ChartSeed {
+  label: string;
+  color: string;
+  group: string;
 }
-export interface Row {
-  height: number;
-  columns: Column[];
+export interface Panels {
+  panels: PanelDef[];
+  charts: ChartSeed[];
 }
-export interface Screen {
-  name: string;
-  title: string;
-  rows: Row[];
-}
-export interface Layout {
-  display: { screens: Screen[] };
+export interface FiltersReply {
   filters: FilterMeta[];
-  not_displayed: string[];
-}
-export interface LayoutReply {
-  layout: Layout | null;
+  baskets: BasketDto[];
   error: string | null;
-  panel_links: Record<string, string>;
+}
+
+export interface ClauseStat {
+  clause: string;
+  passed: number;
+  unknown: number;
+  of: number;
+}
+export interface Miss {
+  time: string;
+  blocking: string[];
+}
+export interface Diagnosis {
+  filter: string;
+  symbol: string;
+  day: string;
+  source: string;
+  kind: "trigger" | "list";
+  hours: string;
+  bars: number;
+  first_bar: string | null;
+  minutes_in_hours: number;
+  true_minutes: number;
+  fires: [string, number | null][];
+  clauses: ClauseStat[];
+  closest: Miss | null;
+  last: Miss | null;
+}
+export interface Count {
+  fires: number;
+  symbols: [string, number][];
+}
+export interface TestResult {
+  day: string;
+  before: Count;
+  after: Count;
+  added: string[];
+  removed: string[];
+  seconds: number;
+}
+export interface FilterText {
+  file: string;
+  block: string;
+  literals: [number, number][];
 }
 
 export const LINK_COLORS = ["red", "blue", "green", "yellow", "orange", "purple", "pink", "cyan"] as const;
@@ -106,7 +162,7 @@ export function nextColor(c: string): string {
 }
 
 export const api = {
-  getLayout: () => invoke<LayoutReply>("get_layout"),
+  getFilters: () => invoke<FiltersReply>("get_filters"),
   getSnapshot: () => invoke<Snapshot>("get_snapshot"),
   reloadFilters: () => invoke<string>("reload_filters"),
   startLive: (realtime: boolean) => invoke<void>("start_live", { realtime }),
@@ -116,9 +172,21 @@ export const api = {
   explain: (filter: string, symbol: string) => invoke<string>("explain", { filter, symbol }),
   linkSet: (color: string, symbol: string) => invoke<void>("link_set", { color, symbol }),
   linkGet: () => invoke<Record<string, string>>("link_get"),
-  setPanelLink: (key: string, color: string) => invoke<void>("set_panel_link", { key, color }),
+  panelsGet: () => invoke<Panels>("panels_get"),
+  panelUpdate: (panel: PanelDef) => invoke<void>("panel_update", { panel }),
+  panelCreate: () => invoke<string>("panel_create"),
+  panelDelete: (id: string) => invoke<void>("panel_delete", { id }),
+  openPanel: (id: string) => invoke<void>("open_panel", { id }),
+  resetLayout: () => invoke<void>("reset_layout"),
+  diagnose: (filter: string, symbol: string) => invoke<Diagnosis>("diagnose", { filter, symbol }),
+  filterSource: (name: string, kind: "filter" | "basket" = "filter") => invoke<FilterText>("filter_source", { name, kind }),
+  filterTest: (name: string, block: string) => invoke<TestResult>("filter_test", { name, block }),
+  filterSave: (name: string, block: string, reason: string, tested: string | null, kind: "filter" | "basket" = "filter") =>
+    invoke<string>("filter_save", { name, block, reason, tested, kind }),
+  filterUndo: (name: string, kind: "filter" | "basket" = "filter") => invoke<string>("filter_undo", { name, kind }),
+  basketCount: (name: string, block: string) => invoke<BasketCount>("basket_count", { name, block }),
+  openDialog: (kind: "why" | "edit" | "basket", filter: string, symbol: string | null) => invoke<void>("open_dialog", { kind, filter, symbol }),
   chartWatch: (id: string, symbol: string | null) => invoke<void>("chart_watch", { id, symbol }),
-  chartHistory: (symbol: string, until: string | null, days: number) => invoke<[number, number, number, number, number, number][]>("chart_history", { symbol, until, days }),
   openScreen: (name: string) => invoke<void>("open_screen", { name }),
   openChart: (color: string) => invoke<void>("open_chart", { color }),
   setChartColor: (label: string, color: string) => invoke<void>("set_chart_color", { label, color }),

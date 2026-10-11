@@ -11,7 +11,7 @@
   },
   "app": {
     "windows": [
-      { "label": "launcher", "title": "TP Scanner", "width": 1100, "height": 64, "minHeight": 64, "resizable": true }
+      { "label": "launcher", "title": "TP Scanner", "width": 1250, "height": 46, "minHeight": 46, "resizable": true }
     ],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost ws://localhost:* http://localhost:*; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"

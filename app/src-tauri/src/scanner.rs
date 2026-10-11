@@ -8,7 +8,7 @@
 //! Signals are a boundary: they leave as immutable values (events, a JSONL day file). Nothing here
 //! holds broker credentials or can reach an order path.
 
-use crate::layout::{self, Layout};
+use crate::layout::{self, FilterMeta};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
@@ -25,6 +25,7 @@ use tp_massive::ws::{FeedState, LiveSource, Poll};
 use tp_scan_engine::compile::{Compiled, Kind, Program};
 use tp_scan_engine::engine::{Engine, EngineError, ListChange, Signal, Sink};
 use tp_scan_engine::instrument::JsonlSink;
+use tp_scan_engine::state::Reference;
 
 /// Signals kept for windows that open later (newest last).
 const KEEP_SIGNALS: usize = 5000;
@@ -96,10 +97,25 @@ pub struct Snapshot {
 #[derive(Default)]
 pub struct Shared {
     pub snapshot: Snapshot,
-    pub layout: Option<Layout>,
-    pub layout_error: Option<String>,
+    /// What the panels need to know about each loaded filter.
+    pub filters: Vec<FilterMeta>,
+    /// Why the filters didn't load (the app runs on, with none or the previous set).
+    pub filters_error: Option<String>,
     /// Chart window label → the symbol it shows, so the engine forwards that symbol's bars.
     pub chart_symbols: HashMap<String, String>,
+    /// What the side tools (diagnose, filter tests) need to run a filter on their own: the loaded
+    /// program, the references, the replay day and when the running feed started.
+    pub program: Program,
+    pub daily: Option<Arc<RawDaily>>,
+    pub references: Arc<Vec<(String, Reference)>>,
+    pub replay_date: Option<chrono::NaiveDate>,
+    pub feed_start: Option<Ts>,
+    /// Link colour → the symbol its charts show. The single copy: windows set it by click, panels
+    /// with Follow on set it on each new fire. `links_dirty` asks the app to save it.
+    pub links: HashMap<String, String>,
+    pub links_dirty: bool,
+    /// Filter → the link colours of the panels showing it with Follow on.
+    pub follow: HashMap<String, Vec<String>>,
 }
 
 pub enum Cmd {
@@ -138,7 +154,16 @@ struct AppSink {
     next_id: u64,
     jsonl: Option<JsonlSink<BufWriter<File>>>,
     errors: VecDeque<String>,
+    /// Whether a fire may move a followed link now: live, or a replay at a watchable pace (not
+    /// at max speed, not in its fast-forward to the start time).
+    follow_now: bool,
+    /// Link colour → when a fire last moved it (wall clock): at most one switch a second per colour,
+    /// so a burst of fires can't strobe the charts.
+    followed_at: HashMap<String, Instant>,
 }
+
+/// The least time between two follow switches of one link colour.
+const FOLLOW_GAP: Duration = Duration::from_millis(1000);
 
 impl Sink for AppSink {
     fn signal(&mut self, s: &Signal) {
@@ -158,6 +183,18 @@ impl Sink for AppSink {
         }
         let _ = self.app.emit("scan-signal", &dto);
         let mut g = self.shared.lock().expect("shared");
+        if self.follow_now {
+            let colors = g.follow.get(&*s.filter).cloned().unwrap_or_default();
+            for c in colors {
+                if g.links.get(&c).is_some_and(|cur| **cur == *s.symbol) || self.followed_at.get(&c).is_some_and(|t| t.elapsed() < FOLLOW_GAP) {
+                    continue;
+                }
+                self.followed_at.insert(c.clone(), Instant::now());
+                g.links.insert(c.clone(), s.symbol.to_string());
+                g.links_dirty = true;
+                let _ = self.app.emit("link-changed", serde_json::json!({"color": c, "symbol": &*s.symbol}));
+            }
+        }
         let sig = &mut g.snapshot.signals;
         sig.push_back(dto);
         while sig.len() > KEEP_SIGNALS {
@@ -196,7 +233,8 @@ struct Replay {
 /// Daily references and float, loaded once and shared by every engine the thread builds.
 struct Refs {
     daily: Option<Arc<RawDaily>>,
-    floats: Vec<(String, f64)>,
+    /// Float, security type and exchange per symbol.
+    references: Arc<Vec<(String, Reference)>>,
     warnings: Vec<String>,
 }
 
@@ -235,9 +273,22 @@ fn load_refs(data: &std::path::Path) -> Refs {
             vec![]
         }
     };
+    // Ticker types and exchanges (baskets). Fetched here once if a sync hasn't fetched them yet.
+    if !data.join(tp_massive::tickers::FILE).exists() {
+        if let Ok(rest) = tp_massive::Secret::from_env(tp_massive::API_KEY_VAR).and_then(tp_massive::rest::Rest::new) {
+            if let Err(e) = tp_massive::tickers::refresh(&rest, data) {
+                warnings.push(format!("ticker reference not fetched ({e}): basket types and exchanges read unknown"));
+            }
+        }
+    }
+    let tickers = tp_massive::tickers::load(data);
+    if tickers.is_empty() {
+        warnings.push("no ticker reference: basket types and exchanges read unknown (run `tp-scan sync`)".into());
+    }
+    let references = Arc::new(Reference::merge(&floats, &tickers));
     // Feeds Starter doesn't carry. Their filters read unknown and never fire; say so.
     warnings.push("no halt, imbalance or NYSE IND feed yet: those panels stay empty".into());
-    Refs { daily, floats, warnings }
+    Refs { daily, references, warnings }
 }
 
 pub fn now_ms() -> i64 {
@@ -275,34 +326,32 @@ impl Runner {
             Err(e) => (Program::default(), Some(e)),
         };
         let engine = Engine::new(&program).unwrap_or_else(|_| Engine::new(&Program::default()).expect("empty program"));
-        let sink = AppSink { app: app.clone(), shared: shared.clone(), next_id: 0, jsonl: None, errors: VecDeque::new() };
+        let sink = AppSink { app: app.clone(), shared: shared.clone(), next_id: 0, jsonl: None, errors: VecDeque::new(), follow_now: false, followed_at: HashMap::new() };
+        {
+            let mut g = shared.lock().expect("shared");
+            g.daily = refs.daily.clone();
+            g.references = refs.references.clone();
+        }
         let mut r = Runner { app, shared, filters_dir, data_dir, program, engine, refs, source: Source::Idle, sink, since: None, latest: None, rx };
-        r.publish_layout(err);
+        r.publish_filters(err);
         r.reset_engine();
         r
     }
 
-    fn publish_layout(&mut self, load_error: Option<String>) {
+    fn publish_filters(&mut self, load_error: Option<String>) {
         let compiled = Compiled::new(&self.program);
         let mut g = self.shared.lock().expect("shared");
         if let Some(e) = load_error {
-            g.layout_error = Some(e);
+            g.filters_error = Some(e);
             return;
         }
-        let Ok(c) = compiled else {
-            g.layout_error = Some("filters don't compile".into());
-            return;
-        };
-        let meta = layout::filter_meta(&self.program, &c);
-        match std::fs::read_to_string(self.filters_dir.join("display.json")) {
-            Ok(t) => match layout::check(&t, meta) {
-                Ok(l) => {
-                    g.layout = Some(l);
-                    g.layout_error = None;
-                }
-                Err(e) => g.layout_error = Some(e),
-            },
-            Err(e) => g.layout_error = Some(format!("{}: {e}", self.filters_dir.join("display.json").display())),
+        match compiled {
+            Ok(c) => {
+                g.filters = layout::filter_meta(&self.program, &c);
+                g.filters_error = None;
+                g.program = self.program.clone();
+            }
+            Err(e) => g.filters_error = Some(format!("filters don't compile: {e}")),
         }
     }
 
@@ -314,8 +363,8 @@ impl Runner {
                 d.adjusted_history(sym, session, tp_scan_engine::daily::HISTORY_DAYS)
             }));
         }
-        for (s, f) in &self.refs.floats {
-            self.engine.set_reference(s, tp_scan_engine::state::Reference { float_shares: Some(*f) });
+        for (s, r) in self.refs.references.iter() {
+            self.engine.set_reference(s, r.clone());
         }
         self.since = None;
         self.latest = None;
@@ -324,6 +373,7 @@ impl Runner {
             let mut g = self.shared.lock().expect("shared");
             g.snapshot.signals.clear();
             g.snapshot.lists.clear();
+            g.feed_start = None;
         }
         let _ = self.app.emit("scan-reset", ());
     }
@@ -367,14 +417,10 @@ impl Runner {
                     Ok(p) => {
                         let n = p.filters.len();
                         self.program = p;
-                        self.publish_layout(None);
-                        let layout_err = self.shared.lock().expect("shared").layout_error.clone();
+                        self.publish_filters(None);
                         self.reset_engine();
-                        let _ = self.app.emit("layout-changed", ());
-                        match layout_err {
-                            Some(e) => Err(format!("filters loaded ({n}), but the layout didn't: {e}")),
-                            None => Ok(format!("{n} filters loaded; history restarts now")),
-                        }
+                        let _ = self.app.emit("filters-changed", ());
+                        Ok(format!("{n} filters loaded; history restarts now"))
                     }
                     // A bad edit keeps the running engine.
                     Err(e) => Err(format!("not reloaded, still running the previous filters:\n{e}")),
@@ -384,6 +430,7 @@ impl Runner {
             Cmd::Live { realtime } => {
                 self.stop_source();
                 self.reset_engine();
+                self.shared.lock().expect("shared").replay_date = None;
                 match tp_massive::Secret::from_env(tp_massive::API_KEY_VAR) {
                     Ok(key) => {
                         let url = if realtime { tp_massive::ws::REALTIME_URL } else { tp_massive::ws::DELAYED_URL };
@@ -400,6 +447,7 @@ impl Runner {
                     Ok(src) => {
                         let fast_until = start_at.and_then(|t| Ts::from_ny_local(date, t).ok());
                         self.source = Source::Replay(Replay { src, date, speed, fast_until, pending: None, anchor: None, done: false });
+                        self.shared.lock().expect("shared").replay_date = Some(date);
                     }
                     Err(e) => self.set_feed_error(e),
                 }
@@ -483,6 +531,9 @@ impl Runner {
         let at = ev.available_at();
         if self.since.is_none() {
             self.since = Some(at);
+            if let MarketEvent::Bar { bar, .. } = ev {
+                self.shared.lock().expect("shared").feed_start = Some(bar.start);
+            }
         }
         if self.latest.is_none_or(|t| at > t) {
             self.latest = Some(at);
@@ -519,6 +570,7 @@ impl Runner {
                 std::thread::sleep(Duration::from_millis(50));
             }
             Source::Live(mut l) => {
+                self.sink.follow_now = true;
                 while Instant::now() < budget {
                     match l.next_timeout(Duration::from_millis(50)) {
                         Poll::Event(e) => self.on_event(&e, &watched),
@@ -546,6 +598,7 @@ impl Runner {
                     let ev = r.pending.as_ref().expect("filled above");
                     let due = ev.available_at().millis();
                     let fast = r.speed <= 0.0 || r.fast_until.is_some_and(|t| due < t.millis());
+                    self.sink.follow_now = !fast;
                     if !fast {
                         let (t0, w0) = *r.anchor.get_or_insert((due, Instant::now()));
                         let wait_ms = ((due - t0) as f64 / r.speed) as i64 - w0.elapsed().as_millis() as i64;

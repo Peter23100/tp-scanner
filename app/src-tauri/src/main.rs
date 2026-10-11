@@ -1,9 +1,11 @@
 //! TP Scanner: the Primus replacement's desktop app.
 //!
-//! Windows: a launcher bar, one window per screen (`screen-<name>`, laid out by
-//! `filters/display.json`) and any number of chart windows (`chart-<n>`). Each chart window and
-//! each chart panel has a link colour; clicking a symbol in a panel sends it to every chart of
-//! that panel's colour.
+//! Windows: a launcher bar, one window per filter panel (`panel-<id>`, defined in `panels.json`,
+//! seeded from `filters/display.json`) and any number of chart windows (`chart-<n>`, or
+//! `chart-<group>-<n>` for the charts that open with a group). Each panel and chart has a link
+//! colour; clicking a symbol in a panel sends it to every chart of that panel's colour.
+//!
+//! Every window can be moved and resized; where it sits is remembered per label (`ui.json`).
 //!
 //! **Hard rule:** this process holds Massive market-data keys only. It never holds broker
 //! credentials and has no path to an order.
@@ -11,8 +13,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod layout;
+mod panels;
 mod scanner;
+mod tools;
 
+use panels::{PanelDef, Panels};
 use scanner::{Cmd, Shared, Snapshot};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -20,21 +25,31 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use std::time::Duration;
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, RunEvent, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
-/// Which windows were open, and each chart's colour. Saved so a restart reopens the same desk.
+/// Which windows were open, where every window sits, and each link colour's symbol. Saved so a
+/// restart reopens the same desk.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct UiState {
     windows: Vec<WinRec>,
-    /// Panel key (`screen/row/col/item`) → link colour, when changed from display.json's.
-    #[serde(default)]
-    panel_links: HashMap<String, String>,
     /// Link colour → the symbol it shows.
     #[serde(default)]
     links: HashMap<String, String>,
     /// The data source running at shutdown, restarted at launch.
     #[serde(default)]
     resume: Option<Resume>,
+    /// Window label → outer position and inner size, physical pixels.
+    #[serde(default)]
+    geom: HashMap<String, Geom>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+struct Geom {
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,9 +76,9 @@ fn resume_cmd(r: &Resume) -> Result<Cmd, String> {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct WinRec {
     label: String,
-    /// "screen" or "chart".
+    /// "panel" or "chart".
     kind: String,
-    /// The screen name, or the chart's link colour.
+    /// The panel id, or the chart's link colour.
     arg: String,
 }
 
@@ -72,20 +87,45 @@ struct App {
     shared: Arc<Mutex<Shared>>,
     ui: Mutex<UiState>,
     ui_path: PathBuf,
+    panels: Mutex<Panels>,
+    panels_path: PathBuf,
+    filters_dir: PathBuf,
+    data_dir: PathBuf,
+    /// Window geometry changed and isn't on disk yet (saved by a background timer: a drag sends
+    /// hundreds of moves).
+    dirty: AtomicBool,
     exiting: AtomicBool,
     rest: Option<Arc<tp_massive::rest::Rest>>,
     chart_cache: Mutex<HashMap<String, Arc<Vec<[f64; 6]>>>>,
 }
 
+fn write_json<T: Serialize>(path: &std::path::Path, v: &T) {
+    if let Ok(t) = serde_json::to_string_pretty(v) {
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, t).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
+        }
+    }
+}
+
 impl App {
     fn save_ui(&self) {
-        let ui = self.ui.lock().expect("ui").clone();
-        if let Ok(t) = serde_json::to_string_pretty(&ui) {
-            let tmp = self.ui_path.with_extension("json.tmp");
-            if std::fs::write(&tmp, t).is_ok() {
-                let _ = std::fs::rename(&tmp, &self.ui_path);
-            }
-        }
+        self.dirty.store(false, Ordering::SeqCst);
+        let links = {
+            let mut g = self.shared.lock().expect("shared");
+            g.links_dirty = false;
+            g.links.clone()
+        };
+        let mut ui = self.ui.lock().expect("ui").clone();
+        ui.links = links;
+        write_json(&self.ui_path, &ui);
+    }
+
+    fn save_panels(&self, handle: &AppHandle) {
+        let p = self.panels.lock().expect("panels").clone();
+        write_json(&self.panels_path, &p);
+        self.shared.lock().expect("shared").follow = follow_map(&p);
+        let _ = handle.emit("panels-changed", ());
     }
 
     fn send(&self, c: Cmd) -> Result<(), String> {
@@ -93,17 +133,91 @@ impl App {
     }
 }
 
+/// `ui.json` if it reads (a byte-order mark from an editor is tolerated). An unreadable file is
+/// kept aside as `ui.json.bad` rather than overwritten by the fresh state the app then saves, so a
+/// desk's layout is never lost silently.
+fn load_ui(path: &std::path::Path) -> UiState {
+    let Ok(t) = std::fs::read_to_string(path) else { return UiState::default() };
+    match serde_json::from_str::<UiState>(t.trim_start_matches('\u{feff}')) {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("ui.json unreadable ({e}); starting fresh, the old file kept as ui.json.bad");
+            let _ = std::fs::rename(path, path.with_extension("json.bad"));
+            UiState::default()
+        }
+    }
+}
+
+/// `panels.json` if it reads, else the Primus screens from display.json (a broken file is kept
+/// aside as `panels.json.bad`, never silently overwritten).
+fn load_panels(path: &std::path::Path, filters_dir: &std::path::Path) -> Panels {
+    if let Ok(t) = std::fs::read_to_string(path) {
+        match serde_json::from_str::<Panels>(t.trim_start_matches('\u{feff}')) {
+            Ok(p) => return p,
+            Err(e) => {
+                eprintln!("panels.json unreadable ({e}); re-seeding from display.json");
+                let _ = std::fs::rename(path, path.with_extension("json.bad"));
+            }
+        }
+    }
+    seed_panels(filters_dir)
+}
+
+/// Filter → the link colours of the panels that show it with Follow on.
+fn follow_map(p: &Panels) -> HashMap<String, Vec<String>> {
+    let mut m: HashMap<String, Vec<String>> = HashMap::new();
+    for panel in p.panels.iter().filter(|x| x.follow) {
+        for f in &panel.filters {
+            let v = m.entry(f.clone()).or_default();
+            if !v.contains(&panel.link) {
+                v.push(panel.link.clone());
+            }
+        }
+    }
+    m
+}
+
+fn seed_panels(filters_dir: &std::path::Path) -> Panels {
+    std::fs::read_to_string(filters_dir.join("display.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<layout::Display>(&t).ok())
+        .map(|d| panels::seed(&d))
+        .unwrap_or_default()
+}
+
 #[derive(Serialize)]
-struct LayoutReply {
-    layout: Option<layout::Layout>,
+struct BasketDto {
+    name: String,
+    types: Vec<String>,
+    exchanges: Vec<String>,
+    /// `[key, min, max]`.
+    ranges: Vec<(String, Option<f64>, Option<f64>)>,
+    used_by: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct FiltersReply {
+    filters: Vec<layout::FilterMeta>,
+    baskets: Vec<BasketDto>,
     error: Option<String>,
-    panel_links: HashMap<String, String>,
 }
 
 #[tauri::command]
-fn get_layout(app: State<'_, App>) -> LayoutReply {
+fn get_filters(app: State<'_, App>) -> FiltersReply {
     let g = app.shared.lock().expect("shared");
-    LayoutReply { layout: g.layout.clone(), error: g.layout_error.clone(), panel_links: app.ui.lock().expect("ui").panel_links.clone() }
+    let baskets = g
+        .program
+        .baskets
+        .iter()
+        .map(|b| BasketDto {
+            name: b.name.to_string(),
+            types: b.types.clone(),
+            exchanges: b.exchanges.clone(),
+            ranges: b.ranges.clone(),
+            used_by: g.program.filters.iter().filter(|f| f.basket.as_deref() == Some(&*b.name)).map(|f| f.name.to_string()).collect(),
+        })
+        .collect();
+    FiltersReply { filters: g.filters.clone(), baskets, error: g.filters_error.clone() }
 }
 
 #[tauri::command]
@@ -168,23 +282,122 @@ fn link_set(handle: AppHandle, app: State<'_, App>, color: String, symbol: Strin
         return Err(format!("no link colour `{color}`"));
     }
     let symbol = symbol.trim().to_uppercase();
-    app.ui.lock().expect("ui").links.insert(color.clone(), symbol.clone());
+    app.shared.lock().expect("shared").links.insert(color.clone(), symbol.clone());
     app.save_ui();
     handle.emit("link-changed", serde_json::json!({"color": color, "symbol": symbol})).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn link_get(app: State<'_, App>) -> HashMap<String, String> {
-    app.ui.lock().expect("ui").links.clone()
+    app.shared.lock().expect("shared").links.clone()
 }
 
 #[tauri::command]
-fn set_panel_link(app: State<'_, App>, key: String, color: String) -> Result<(), String> {
-    if !layout::LINK_COLORS.contains(&color.as_str()) {
-        return Err(format!("no link colour `{color}`"));
+fn panels_get(app: State<'_, App>) -> Panels {
+    app.panels.lock().expect("panels").clone()
+}
+
+/// Replace one panel's definition (filters, title, colour, follow, sound). Its group and first-open
+/// tile are kept.
+#[tauri::command]
+fn panel_update(handle: AppHandle, app: State<'_, App>, panel: PanelDef) -> Result<(), String> {
+    panels::validate(&panel)?;
+    {
+        let mut g = app.panels.lock().expect("panels");
+        let slot = g.panels.iter_mut().find(|p| p.id == panel.id).ok_or_else(|| format!("no panel `{}`", panel.id))?;
+        *slot = PanelDef { group: slot.group.clone(), tile: slot.tile, ..panel };
     }
-    app.ui.lock().expect("ui").panel_links.insert(key, color);
+    app.save_panels(&handle);
+    Ok(())
+}
+
+// Window-creating commands must be async: a sync command runs on the main thread, and building a
+// webview from there deadlocks on Windows (the window appears frozen and blank).
+#[tauri::command]
+async fn panel_create(handle: AppHandle, app: State<'_, App>) -> Result<String, String> {
+    let id = {
+        let mut g = app.panels.lock().expect("panels");
+        let id = g.new_id();
+        g.panels.push(PanelDef { id: id.clone(), title: Some("New panel".into()), filters: vec![], link: "red".into(), follow: true, sound: false, group: String::new(), tile: None });
+        id
+    };
+    app.save_panels(&handle);
+    open_panel_window(&handle, &app, &id)?;
+    Ok(id)
+}
+
+#[tauri::command]
+async fn panel_delete(handle: AppHandle, app: State<'_, App>, id: String) -> Result<(), String> {
+    let label = format!("panel-{id}");
+    if let Some(w) = handle.get_webview_window(&label) {
+        let _ = w.destroy();
+    }
+    app.panels.lock().expect("panels").panels.retain(|p| p.id != id);
+    {
+        let mut ui = app.ui.lock().expect("ui");
+        ui.windows.retain(|r| r.label != label);
+        ui.geom.remove(&label);
+    }
     app.save_ui();
+    app.save_panels(&handle);
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_panel(handle: AppHandle, app: State<'_, App>, id: String) -> Result<(), String> {
+    open_panel_window(&handle, &app, &id)
+}
+
+/// Open every panel and chart of a group (a Primus screen).
+#[tauri::command]
+async fn open_screen(handle: AppHandle, app: State<'_, App>, name: String) -> Result<(), String> {
+    let (ids, charts) = {
+        let g = app.panels.lock().expect("panels");
+        let ids: Vec<String> = g.panels.iter().filter(|p| p.group == name).map(|p| p.id.clone()).collect();
+        let charts: Vec<panels::ChartSeed> = g.charts.iter().filter(|c| c.group == name).cloned().collect();
+        (ids, charts)
+    };
+    if ids.is_empty() && charts.is_empty() {
+        return Err(format!("no panels in `{name}`"));
+    }
+    for id in ids {
+        open_panel_window(&handle, &app, &id)?;
+    }
+    for c in charts {
+        let rec = WinRec { label: c.label.clone(), kind: "chart".into(), arg: c.color.clone() };
+        open_window(&handle, &app, &rec, c.tile.map(|t| (c.group.clone(), t)))?;
+        remember(&app, rec);
+    }
+    Ok(())
+}
+
+/// Back to the Primus screens: every panel window closes, panels.json is re-seeded from
+/// display.json, and the panels' remembered positions are forgotten.
+#[tauri::command]
+async fn reset_layout(handle: AppHandle, app: State<'_, App>) -> Result<(), String> {
+    let seeded = seed_panels(&app.filters_dir);
+    if seeded.panels.is_empty() {
+        return Err(format!("{} has no panels; nothing reset", app.filters_dir.join("display.json").display()));
+    }
+    let old: Vec<String> = {
+        let g = app.panels.lock().expect("panels");
+        g.panels.iter().map(|p| format!("panel-{}", p.id)).chain(g.charts.iter().map(|c| c.label.clone())).collect()
+    };
+    for l in &old {
+        if let Some(w) = handle.get_webview_window(l) {
+            let _ = w.destroy();
+        }
+    }
+    {
+        let mut ui = app.ui.lock().expect("ui");
+        ui.windows.retain(|r| !old.contains(&r.label));
+        for l in &old {
+            ui.geom.remove(l);
+        }
+    }
+    *app.panels.lock().expect("panels") = seeded;
+    app.save_ui();
+    app.save_panels(&handle);
     Ok(())
 }
 
@@ -198,54 +411,195 @@ fn chart_watch(app: State<'_, App>, id: String, symbol: Option<String>) {
     };
 }
 
-/// 1-minute bars `[t_ms, o, h, l, c, v]` for the `days` calendar days ending `until` (default
-/// today), as printed. Past ranges are cached for the session.
-#[tauri::command]
-async fn chart_history(app: State<'_, App>, symbol: String, until: Option<String>, days: i64) -> Result<Arc<Vec<[f64; 6]>>, String> {
-    let rest = app.rest.clone().ok_or_else(|| format!("{} is not set: charts need the Massive API key", tp_massive::API_KEY_VAR))?;
-    let today = tp_marketdata::time::Ts::from_millis(scanner::now_ms()).expect("now").ny().date_naive();
-    let to = match until {
-        Some(u) => chrono::NaiveDate::parse_from_str(&u, "%Y-%m-%d").map_err(|e| e.to_string())?,
-        None => today,
-    };
-    let from = to - chrono::Duration::days(days.clamp(1, 30));
-    let symbol = symbol.trim().to_uppercase();
-    let key = format!("{symbol}/{from}/{to}");
+#[derive(Serialize)]
+struct ChartBars {
+    /// `[t_ms, o, h, l, c, v]`, oldest first. Intraday: the bucket start. Daily and longer: UTC
+    /// midnight of the New York date, as TradierPro's charts stamp them.
+    bars: Vec<[f64; 6]>,
+    /// Intraday: the start of the newest 1-minute bar inside `bars`. Live minutes after it extend
+    /// the chart; earlier ones are already counted.
+    last_minute: Option<f64>,
+}
+
+/// One REST answer, cached when its range is wholly in the past (it can't change).
+fn rest_bars(app: &App, rest: &tp_massive::rest::Rest, symbol: &str, span: &str, from: chrono::NaiveDate, to: chrono::NaiveDate, today: chrono::NaiveDate) -> Result<Arc<Vec<[f64; 6]>>, String> {
+    let key = format!("{symbol}/{span}/{from}/{to}");
     if let Some(v) = app.chart_cache.lock().expect("cache").get(&key) {
         return Ok(v.clone());
     }
-    let sym = symbol.clone();
-    let bars = tauri::async_runtime::spawn_blocking(move || rest.minute_bars(&sym, from, to))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
-    let out: Arc<Vec<[f64; 6]>> = Arc::new(
-        bars.iter()
-            .map(|b| [b.start.millis() as f64, b.open.value(), b.high.value(), b.low.value(), b.close.value(), b.volume])
-            .collect(),
-    );
+    let v = Arc::new(rest.chart_bars(symbol, span, from, to, true).map_err(|e| e.to_string())?);
     if to < today {
-        app.chart_cache.lock().expect("cache").insert(key, out.clone());
+        app.chart_cache.lock().expect("cache").insert(key, v.clone());
     }
-    Ok(out)
+    Ok(v)
 }
 
-fn open_window(handle: &AppHandle, rec: &WinRec) -> Result<(), String> {
+/// Calendar days that comfortably hold `bars` bars of `interval` (TradierPro's lookbackDays).
+fn lookback_days(bars: i64, interval: &str) -> i64 {
+    let up = |a: i64, b: i64| (a + b - 1) / b;
+    match interval {
+        "1m" => up(bars * 7, 390 * 5) + 3,
+        "5m" => up(bars * 7, 78 * 5) + 3,
+        "15m" => up(bars * 7, 26 * 5) + 3,
+        "daily" => up(bars * 7, 5) + 7,
+        "weekly" => bars * 7 + 14,
+        _ => bars * 31 + 30,
+    }
+}
+
+/// Bars for a chart. `until_ms` (replay) cuts history at the replay's clock so the chart never
+/// shows what the scan hasn't reached; live charts run to now.
+#[tauri::command]
+async fn chart_bars(app: State<'_, App>, symbol: String, interval: String, bars: i64, until_ms: Option<i64>) -> Result<ChartBars, String> {
+    let rest = app.rest.clone().ok_or_else(|| format!("{} is not set: charts need the Massive API key", tp_massive::API_KEY_VAR))?;
+    let symbol = symbol.trim().to_uppercase();
+    let ny_date = |ms: i64| tp_marketdata::time::Ts::from_millis(ms).map(|t| t.ny().date_naive());
+    let today = ny_date(scanner::now_ms()).expect("now");
+    let to = until_ms.and_then(ny_date).unwrap_or(today);
+    let bars = bars.clamp(10, 5000);
+    let intraday_ms = match interval.as_str() {
+        "1m" => Some(60_000i64),
+        "5m" => Some(300_000),
+        "15m" => Some(900_000),
+        "daily" | "weekly" | "monthly" => None,
+        i => return Err(format!("unknown interval `{i}`")),
+    };
+    let app2: &App = &app;
+    let cut = |t: f64| until_ms.is_none_or(|u| t as i64 + 60_000 <= u);
+    if let Some(ms) = intraday_ms {
+        // Indicator warm-up bars ride along (TradierPro's INTRADAY_INDICATOR_WARMUP).
+        let from = to - chrono::Duration::days(lookback_days(bars + 50, &interval));
+        let mins = rest_bars(app2, &rest, &symbol, "minute", from, to, today)?;
+        let mut out: Vec<[f64; 6]> = vec![];
+        let mut last_minute = None;
+        for m in mins.iter().filter(|m| cut(m[0])) {
+            last_minute = Some(m[0]);
+            let k = ((m[0] as i64).div_euclid(ms) * ms) as f64;
+            match out.last_mut() {
+                Some(b) if b[0] == k => {
+                    b[2] = b[2].max(m[2]);
+                    b[3] = b[3].min(m[3]);
+                    b[4] = m[4];
+                    b[5] += m[5];
+                }
+                _ => out.push([k, m[1], m[2], m[3], m[4], m[5]]),
+            }
+        }
+        return Ok(ChartBars { bars: out, last_minute });
+    }
+    let span = match interval.as_str() {
+        "daily" => "day",
+        "weekly" => "week",
+        _ => "month",
+    };
+    // In a replay the replay day's own bar would hold the whole day; take history to the day
+    // before and build the replay day from its minutes up to the clock.
+    let hist_to = if until_ms.is_some() { to - chrono::Duration::days(1) } else { to };
+    let from = to - chrono::Duration::days(lookback_days(bars, &interval));
+    let midnight = |ms: f64| {
+        ny_date(ms as i64).map(|d| d.and_hms_opt(0, 0, 0).expect("midnight").and_utc().timestamp_millis() as f64).unwrap_or(ms)
+    };
+    let mut out: Vec<[f64; 6]> = rest_bars(app2, &rest, &symbol, span, from, hist_to, today)?.iter().map(|b| [midnight(b[0]), b[1], b[2], b[3], b[4], b[5]]).collect();
+    if until_ms.is_some() && span == "day" {
+        let mins = rest_bars(app2, &rest, &symbol, "minute", to, to, today)?;
+        let mut day: Option<[f64; 6]> = None;
+        for m in mins.iter().filter(|m| cut(m[0])) {
+            day = Some(match day {
+                None => [midnight(m[0]), m[1], m[2], m[3], m[4], m[5]],
+                Some(d) => [d[0], d[1], d[2].max(m[2]), d[3].min(m[3]), m[4], d[5] + m[5]],
+            });
+        }
+        out.extend(day);
+    }
+    Ok(ChartBars { bars: out, last_minute: None })
+}
+
+/// The monitor a group tiles onto: groups in order go to monitors left to right; a group with no
+/// monitor of its own uses the primary.
+fn group_monitor(handle: &AppHandle, app: &App, group: &str) -> Option<tauri::Monitor> {
+    let idx = app.panels.lock().expect("panels").groups().iter().position(|g| g == group);
+    let mut mons = handle.available_monitors().ok()?;
+    mons.sort_by_key(|m| (m.position().x, m.position().y));
+    idx.and_then(|i| mons.get(i).cloned()).or_else(|| handle.primary_monitor().ok().flatten()).or_else(|| mons.into_iter().next())
+}
+
+fn open_panel_window(handle: &AppHandle, app: &App, id: &str) -> Result<(), String> {
+    let tile = {
+        let g = app.panels.lock().expect("panels");
+        let p = g.get(id).ok_or_else(|| format!("no panel `{id}`"))?;
+        p.tile.map(|t| (p.group.clone(), t))
+    };
+    let rec = WinRec { label: format!("panel-{id}"), kind: "panel".into(), arg: id.to_string() };
+    open_window(handle, app, &rec, tile)?;
+    remember(app, rec);
+    Ok(())
+}
+
+/// Open (or focus) a window, placed where it last was; the first time, on its group's tile.
+fn open_window(handle: &AppHandle, app: &App, rec: &WinRec, tile: Option<(String, [f64; 4])>) -> Result<(), String> {
     if let Some(w) = handle.get_webview_window(&rec.label) {
         let _ = w.unminimize();
         return w.set_focus().map_err(|e| e.to_string());
     }
-    let (route, title, w, h) = match rec.kind.as_str() {
-        "screen" => (format!("#/screen/{}", rec.arg), format!("Scanner: {}", rec.arg), 1400.0, 900.0),
-        "chart" => (format!("#/chart/{}/{}", rec.label, rec.arg), "Chart".to_string(), 900.0, 600.0),
+    let (route, w, h) = match rec.kind.as_str() {
+        "panel" => (format!("#/panel/{}", rec.arg), 420.0, 300.0),
+        "chart" => (format!("#/chart/{}/{}", rec.label, rec.arg), 900.0, 600.0),
         k => return Err(format!("unknown window kind `{k}`")),
     };
-    WebviewWindowBuilder::new(handle, &rec.label, WebviewUrl::App(route.into()))
-        .title(title)
+    let win = WebviewWindowBuilder::new(handle, &rec.label, WebviewUrl::App(route.into()))
+        .title(if rec.kind == "panel" { "Panel" } else { "Chart" })
         .inner_size(w, h)
+        .min_inner_size(160.0, 60.0)
+        .visible(false)
         .build()
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    let saved = app.ui.lock().expect("ui").geom.get(&rec.label).copied().filter(|g| on_screen(handle, g));
+    // Reopened at launch, the caller doesn't pass the tile; a panel or group chart still has one.
+    let tile = tile.or_else(|| {
+        let g = app.panels.lock().expect("panels");
+        match rec.kind.as_str() {
+            "panel" => g.get(&rec.arg).and_then(|p| p.tile.map(|t| (p.group.clone(), t))),
+            _ => g.charts.iter().find(|c| c.label == rec.label).and_then(|c| c.tile.map(|t| (c.group.clone(), t))),
+        }
+    });
+    if let Some(g) = saved {
+        let _ = win.set_size(PhysicalSize::new(g.w, g.h));
+        let _ = win.set_position(PhysicalPosition::new(g.x, g.y));
+    } else if let Some((group, t)) = tile {
+        if let Some(m) = group_monitor(handle, app, &group) {
+            place_on_tile(&win, &m, t);
+        }
+    }
+    win.show().map_err(|e| e.to_string())
+}
+
+/// Whether a saved place is still reachable: its title bar's left end is on a connected monitor.
+/// A window saved on a monitor that's gone (unplugged, or the desk rearranged) would reopen where
+/// nobody can see or grab it; it goes back to its tile or the default spot instead. (TradierPro's
+/// off-screen recovery, the same rule.)
+fn on_screen(handle: &AppHandle, g: &Geom) -> bool {
+    let (x, y) = (g.x + 40, g.y + 12);
+    handle.available_monitors().map_or(true, |ms| {
+        ms.iter().any(|m| {
+            let (p, s) = (m.position(), m.size());
+            x >= p.x && y >= p.y && x < p.x + s.width as i32 && y < p.y + s.height as i32
+        })
+    })
+}
+
+/// Put a window's outer frame on a fraction of a monitor's work area.
+fn place_on_tile(win: &WebviewWindow, m: &tauri::Monitor, [fx, fy, fw, fh]: [f64; 4]) {
+    let wa = m.work_area();
+    let (ax, ay, aw, ah) = (wa.position.x as f64, wa.position.y as f64, wa.size.width as f64, wa.size.height as f64);
+    // The frame (title bar, borders) is outer minus inner; the tile is the outer rectangle.
+    let (dw, dh) = match (win.outer_size(), win.inner_size()) {
+        (Ok(o), Ok(i)) => (o.width.saturating_sub(i.width) as f64, o.height.saturating_sub(i.height) as f64),
+        _ => (0.0, 0.0),
+    };
+    let w = ((fw * aw) - dw).max(160.0) as u32;
+    let h = ((fh * ah) - dh).max(60.0) as u32;
+    let _ = win.set_size(PhysicalSize::new(w, h));
+    let _ = win.set_position(PhysicalPosition::new((ax + fx * aw) as i32, (ay + fy * ah) as i32));
 }
 
 fn remember(app: &App, rec: WinRec) {
@@ -256,37 +610,229 @@ fn remember(app: &App, rec: WinRec) {
     app.save_ui();
 }
 
-// Window-creating commands must be async: a sync command runs on the main thread, and building a
-// webview from there deadlocks on Windows (the window appears frozen and blank).
-#[tauri::command]
-async fn open_screen(handle: AppHandle, app: State<'_, App>, name: String) -> Result<(), String> {
-    let rec = WinRec { label: format!("screen-{name}"), kind: "screen".into(), arg: name };
-    open_window(&handle, &rec)?;
-    remember(&app, rec);
-    Ok(())
-}
-
 #[tauri::command]
 async fn open_chart(handle: AppHandle, app: State<'_, App>, color: String) -> Result<(), String> {
     let n = (1..).find(|n| handle.get_webview_window(&format!("chart-{n}")).is_none()).expect("a free number");
     let rec = WinRec { label: format!("chart-{n}"), kind: "chart".into(), arg: color };
-    open_window(&handle, &rec)?;
+    open_window(&handle, &app, &rec, None)?;
     remember(&app, rec);
     Ok(())
 }
 
 #[tauri::command]
-fn set_chart_color(app: State<'_, App>, label: String, color: String) -> Result<(), String> {
+fn set_chart_color(handle: AppHandle, app: State<'_, App>, label: String, color: String) -> Result<(), String> {
     if !layout::LINK_COLORS.contains(&color.as_str()) {
         return Err(format!("no link colour `{color}`"));
     }
     let mut ui = app.ui.lock().expect("ui");
     if let Some(r) = ui.windows.iter_mut().find(|r| r.label == label) {
-        r.arg = color;
+        r.arg = color.clone();
     }
     drop(ui);
     app.save_ui();
+    // A group chart keeps its colour when the group is reopened.
+    let changed = {
+        let mut g = app.panels.lock().expect("panels");
+        g.charts.iter_mut().find(|c| c.label == label).map(|c| c.color = color).is_some()
+    };
+    if changed {
+        app.save_panels(&handle);
+    }
     Ok(())
+}
+
+fn tool_context(app: &App) -> tools::Context {
+    let g = app.shared.lock().expect("shared");
+    tools::Context {
+        program: g.program.clone(),
+        daily: g.daily.clone(),
+        references: g.references.clone(),
+        replay_date: g.replay_date,
+        feed_start: g.feed_start,
+        data_dir: app.data_dir.clone(),
+    }
+}
+
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?
+}
+
+/// Why `symbol` does or doesn't fire `filter` over the day (the replay's day, or today live).
+#[tauri::command]
+async fn diagnose(app: State<'_, App>, filter: String, symbol: String) -> Result<tools::Diagnosis, String> {
+    let cx = tool_context(&app);
+    let rest = app.rest.clone();
+    blocking(move || tools::diagnose(&cx, rest.as_deref(), &filter, &symbol)).await
+}
+
+fn item_kind(kind: Option<&str>) -> Result<tools::ItemKind, String> {
+    match kind.unwrap_or("filter") {
+        "filter" => Ok(tools::ItemKind::Filter),
+        "basket" => Ok(tools::ItemKind::Basket),
+        k => Err(format!("unknown item kind `{k}`")),
+    }
+}
+
+#[tauri::command]
+fn filter_source(app: State<'_, App>, name: String, kind: Option<String>) -> Result<tools::FilterText, String> {
+    tools::source(&app.filters_dir, item_kind(kind.as_deref())?, &name)
+}
+
+/// How many symbols a basket (as edited, not yet saved) lets through on the latest daily data.
+#[tauri::command]
+async fn basket_count(app: State<'_, App>, name: String, block: String) -> Result<tools::BasketCount, String> {
+    let cx = tool_context(&app);
+    let dir = app.filters_dir.clone();
+    blocking(move || {
+        let a = tools::apply(&dir, tools::ItemKind::Basket, &name, &block)?;
+        let def = a.program.baskets.iter().find(|b| *b.name == *name).ok_or_else(|| format!("no basket `{name}` after the edit"))?;
+        tools::basket_count(&cx, def)
+    })
+    .await
+}
+
+/// The edit checked (it must load) and run against the unedited filter over a recorded day.
+#[tauri::command]
+async fn filter_test(app: State<'_, App>, name: String, block: String) -> Result<tools::TestResult, String> {
+    let cx = tool_context(&app);
+    let dir = app.filters_dir.clone();
+    blocking(move || {
+        let a = tools::apply(&dir, tools::ItemKind::Filter, &name, &block)?;
+        tools::test(&cx, &name, &a.program)
+    })
+    .await
+}
+
+fn reload_now(app: &App) -> Result<String, String> {
+    let (tx, rx) = mpsc::channel();
+    app.send(Cmd::Reload(tx))?;
+    rx.recv_timeout(Duration::from_secs(60)).map_err(|_| "no answer from the engine".to_string())?
+}
+
+/// Prepend a dated entry to filters/CHANGES.md, under its introduction.
+fn log_change(dir: &std::path::Path, entry: &str) {
+    let p = dir.join("CHANGES.md");
+    let old = std::fs::read_to_string(&p).unwrap_or_else(|_| "# Filter changes\n\n".into());
+    let at = old.find("\n## ").map(|i| i + 1).unwrap_or(old.len());
+    let rest = if at < old.len() { format!("\n{}", &old[at..]) } else { String::new() };
+    let _ = std::fs::write(&p, format!("{}{}\n{}", &old[..at], entry.trim_end(), rest));
+}
+
+fn now_stamp() -> (String, String) {
+    let t = tp_marketdata::time::Ts::from_millis(scanner::now_ms()).expect("now").ny();
+    (t.format("%Y-%m-%d").to_string(), t.format("%Y%m%d-%H%M%S").to_string())
+}
+
+/// Save an edit: back the file up, write it, reload the engine (a failed reload puts the old file
+/// back), and log the change with the user's reason and the test result.
+#[tauri::command]
+async fn filter_save(app: State<'_, App>, name: String, block: String, reason: String, tested: Option<String>, kind: Option<String>) -> Result<String, String> {
+    let kind = item_kind(kind.as_deref())?;
+    let a = tools::apply(&app.filters_dir, kind, &name, &block)?;
+    if a.new_text == a.old_text {
+        return Err("nothing changed".into());
+    }
+    let existed = a.path.exists();
+    let (day, stamp) = now_stamp();
+    let hist = app.data_dir.join("filter-history");
+    std::fs::create_dir_all(&hist).map_err(|e| e.to_string())?;
+    let file = a.path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+    let backup = hist.join(format!("{file}.{stamp}"));
+    std::fs::write(&backup, &a.old_text).map_err(|e| format!("backup {}: {e}", backup.display()))?;
+    std::fs::write(&a.path, &a.new_text).map_err(|e| format!("{}: {e}", a.path.display()))?;
+    match reload_now(&app) {
+        Ok(msg) => {
+            let reason = if reason.trim().is_empty() { "(no reason given)".to_string() } else { reason.trim().to_string() };
+            let what = if kind == tools::ItemKind::Basket { format!("basket {name}") } else { name.clone() };
+            let verb = if a.old_block.is_empty() { "added" } else { "edited" };
+            let mut entry = format!("## {day}: {what} (`{file}`), {verb} in the app\n\n**Why:** {reason}\n\n```diff\n{}\n```\n", tools::line_diff(&a.old_block, block.trim()));
+            if let Some(t) = tested.filter(|t| !t.trim().is_empty()) {
+                entry.push_str(&format!("\n**Tested:** {}\n", t.trim()));
+            }
+            entry.push_str(&format!("\nBackup of the previous file: `filter-history/{file}.{stamp}`.\n"));
+            log_change(&app.filters_dir, &entry);
+            Ok(format!("saved {file}; {msg}"))
+        }
+        Err(e) => {
+            if existed {
+                let _ = std::fs::write(&a.path, &a.old_text);
+            } else {
+                let _ = std::fs::remove_file(&a.path);
+            }
+            let _ = reload_now(&app);
+            Err(format!("not saved (the old file is back): {e}"))
+        }
+    }
+}
+
+/// Put back the file holding `name` as it was before its newest saved edit.
+#[tauri::command]
+async fn filter_undo(app: State<'_, App>, name: String, kind: Option<String>) -> Result<String, String> {
+    let src = tools::source(&app.filters_dir, item_kind(kind.as_deref())?, &name)?;
+    let hist = app.data_dir.join("filter-history");
+    let prefix = format!("{}.", src.file);
+    let newest = std::fs::read_dir(&hist)
+        .map_err(|_| "no saved edits to undo".to_string())?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.file_name().and_then(|f| f.to_str()).is_some_and(|f| f.starts_with(&prefix) && !f.ends_with(".undone")))
+        .max()
+        .ok_or_else(|| format!("no saved edits of {} to undo", src.file))?;
+    let path = app.filters_dir.join(&src.file);
+    let current = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let restore = std::fs::read_to_string(&newest).map_err(|e| e.to_string())?;
+    std::fs::write(&path, &restore).map_err(|e| e.to_string())?;
+    match reload_now(&app) {
+        Ok(msg) => {
+            let used = newest.file_name().and_then(|f| f.to_str()).unwrap_or_default().to_string();
+            let _ = std::fs::rename(&newest, newest.with_file_name(format!("{used}.undone")));
+            let (day, _) = now_stamp();
+            log_change(&app.filters_dir, &format!("## {day}: `{}` restored from `filter-history/{used}` (undo in the app)\n", src.file));
+            Ok(format!("{} restored; {msg}", src.file))
+        }
+        Err(e) => {
+            let _ = std::fs::write(&path, &current);
+            let _ = reload_now(&app);
+            Err(format!("not undone (the backup doesn't load): {e}"))
+        }
+    }
+}
+
+/// A tool window: `why` (filter + symbol) or `edit` (filter).
+#[tauri::command]
+async fn open_dialog(handle: AppHandle, app: State<'_, App>, kind: String, filter: String, symbol: Option<String>) -> Result<(), String> {
+    let clean = |s: &str| s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect::<String>();
+    let (label, route, w, h) = match kind.as_str() {
+        "why" => {
+            let sym = symbol.unwrap_or_default().trim().to_uppercase();
+            if sym.is_empty() {
+                return Err("which symbol?".into());
+            }
+            (format!("dialog-why-{}-{}", clean(&filter), clean(&sym)), format!("#/why/{filter}/{sym}"), 640.0, 560.0)
+        }
+        "edit" => (format!("dialog-edit-{}", clean(&filter)), format!("#/edit/{filter}"), 760.0, 620.0),
+        "basket" => (format!("dialog-basket-{}", clean(&filter)), format!("#/basket/{filter}"), 640.0, 640.0),
+        k => return Err(format!("unknown dialog `{k}`")),
+    };
+    if let Some(w) = handle.get_webview_window(&label) {
+        let _ = w.unminimize();
+        return w.set_focus().map_err(|e| e.to_string());
+    }
+    let win = WebviewWindowBuilder::new(&handle, &label, WebviewUrl::App(route.into()))
+        .title(match kind.as_str() {
+            "why" => "Why",
+            "basket" => "Basket",
+            _ => "Adjust filter",
+        })
+        .inner_size(w, h)
+        .visible(false)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let saved = app.ui.lock().expect("ui").geom.get(&label).copied().filter(|g| on_screen(&handle, g));
+    if let Some(g) = saved {
+        let _ = win.set_size(PhysicalSize::new(g.w, g.h));
+        let _ = win.set_position(PhysicalPosition::new(g.x, g.y));
+    }
+    win.show().map_err(|e| e.to_string())
 }
 
 fn filters_dir() -> PathBuf {
@@ -298,15 +844,39 @@ fn filters_dir() -> PathBuf {
     dev.canonicalize().unwrap_or(dev)
 }
 
+/// Record a window's place after a move or resize (not while minimized: Windows parks those at
+/// -32000; not while maximized: restoring would come back full-screen).
+fn note_geometry(w: &tauri::Window) {
+    if w.is_minimized().unwrap_or(false) || w.is_maximized().unwrap_or(false) {
+        return;
+    }
+    let (Ok(p), Ok(s)) = (w.outer_position(), w.inner_size()) else { return };
+    let app = w.app_handle().state::<App>();
+    let g = Geom { x: p.x, y: p.y, w: s.width, h: s.height };
+    let mut ui = app.ui.lock().expect("ui");
+    if ui.geom.get(w.label()) != Some(&g) {
+        ui.geom.insert(w.label().to_string(), g);
+        app.dirty.store(true, Ordering::SeqCst);
+    }
+}
+
 fn main() {
     let data_dir = tp_massive::data_dir().unwrap_or_else(|_| std::env::temp_dir().join("tp-scanner"));
     let _ = std::fs::create_dir_all(&data_dir);
     let ui_path = data_dir.join("ui.json");
-    let ui: UiState = std::fs::read_to_string(&ui_path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let ui = load_ui(&ui_path);
+    let filters = filters_dir();
+    let panels_path = data_dir.join("panels.json");
+    let panels = load_panels(&panels_path, &filters);
+    if !panels_path.exists() {
+        write_json(&panels_path, &panels);
+    }
     let rest = tp_massive::Secret::from_env(tp_massive::API_KEY_VAR).ok().and_then(|k| tp_massive::rest::Rest::new(k).ok()).map(Arc::new);
     let (tx, rx) = mpsc::channel();
-    let shared = Arc::new(Mutex::new(Shared::default()));
-    let reopen = ui.windows.clone();
+    let shared = Arc::new(Mutex::new(Shared { links: ui.links.clone(), follow: follow_map(&panels), ..Shared::default() }));
+    // Windows from before the panel rewrite (`screen-*`) no longer exist; drop them.
+    let reopen: Vec<WinRec> = ui.windows.iter().filter(|r| r.kind == "panel" || r.kind == "chart").cloned().collect();
+    let launcher_geom = ui.geom.get("launcher").copied();
     let resume = ui.resume.as_ref().and_then(|r| resume_cmd(r).ok());
     if let Some(c) = resume {
         // Queued now; the engine thread reads it once its filters and references are loaded.
@@ -319,18 +889,22 @@ fn main() {
                 let _ = w.set_focus();
             }
         }))
-        .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(App {
             cmd: Mutex::new(tx),
             shared: shared.clone(),
             ui: Mutex::new(ui),
             ui_path,
+            panels: Mutex::new(panels),
+            panels_path,
+            filters_dir: filters.clone(),
+            data_dir: data_dir.clone(),
+            dirty: AtomicBool::new(false),
             exiting: AtomicBool::new(false),
             rest,
             chart_cache: Mutex::new(HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
-            get_layout,
+            get_filters,
             get_snapshot,
             reload_filters,
             start_live,
@@ -340,26 +914,57 @@ fn main() {
             explain,
             link_set,
             link_get,
-            set_panel_link,
-            chart_watch,
-            chart_history,
+            panels_get,
+            panel_update,
+            panel_create,
+            panel_delete,
+            open_panel,
             open_screen,
+            reset_layout,
+            chart_watch,
+            chart_bars,
             open_chart,
-            set_chart_color
+            set_chart_color,
+            diagnose,
+            filter_source,
+            filter_test,
+            filter_save,
+            filter_undo,
+            basket_count,
+            open_dialog
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
-            let filters = filters_dir();
             std::thread::Builder::new()
                 .name("scan-engine".into())
-                .spawn(move || {
-                    let runner = scanner::Runner::new(handle.clone(), shared, filters, data_dir, rx);
-                    let _ = handle.emit("layout-changed", ());
-                    runner.run();
+                .spawn({
+                    let handle = handle.clone();
+                    move || {
+                        let runner = scanner::Runner::new(handle.clone(), shared, filters, data_dir, rx);
+                        let _ = handle.emit("filters-changed", ());
+                        runner.run();
+                    }
                 })
                 .expect("spawn engine thread");
+            // Geometry is saved a second after the last move, not on every pixel of a drag.
+            std::thread::Builder::new()
+                .name("ui-saver".into())
+                .spawn(move || loop {
+                    std::thread::sleep(Duration::from_secs(1));
+                    let app = handle.state::<App>();
+                    let links_dirty = app.shared.lock().expect("shared").links_dirty;
+                    if app.dirty.load(Ordering::SeqCst) || links_dirty {
+                        app.save_ui();
+                    }
+                })
+                .expect("spawn ui saver");
+            if let (Some(g), Some(w)) = (launcher_geom.filter(|g| on_screen(app.handle(), g)), app.get_webview_window("launcher")) {
+                let _ = w.set_size(PhysicalSize::new(g.w, g.h));
+                let _ = w.set_position(PhysicalPosition::new(g.x, g.y));
+            }
+            let state = app.state::<App>();
             for rec in &reopen {
-                if let Err(e) = open_window(app.handle(), rec) {
+                if let Err(e) = open_window(app.handle(), &state, rec, None) {
                     eprintln!("reopen {}: {e}", rec.label);
                 }
             }
@@ -368,10 +973,12 @@ fn main() {
         .on_window_event(|w, ev| {
             let label = w.label().to_string();
             match ev {
+                WindowEvent::Moved(_) | WindowEvent::Resized(_) => note_geometry(w),
                 WindowEvent::CloseRequested { .. } if label == "launcher" => {
                     // Closing the launcher closes the app; the open windows are remembered.
                     let app = w.app_handle().state::<App>();
                     app.exiting.store(true, Ordering::SeqCst);
+                    app.save_ui();
                     w.app_handle().exit(0);
                 }
                 WindowEvent::Destroyed => {
@@ -389,7 +996,9 @@ fn main() {
         .expect("build the app");
     app.run(|handle, ev| {
         if let RunEvent::ExitRequested { .. } = ev {
-            handle.state::<App>().exiting.store(true, Ordering::SeqCst);
+            let app = handle.state::<App>();
+            app.exiting.store(true, Ordering::SeqCst);
+            app.save_ui();
         }
     });
 }

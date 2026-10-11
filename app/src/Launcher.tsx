@@ -1,9 +1,11 @@
-// The launcher bar: open screens and charts, pick the data source, reload filters, and the status
-// that must never be missed (feed state, delay, errors, what can't fire and why).
-import { useEffect, useState } from "react";
+// The launcher bar, styled as TradierPro's: a menubar (screens, panels, charts, filters) over a
+// status bar (data source and the status that must never be missed: feed state, delay, errors).
+// Lists open by growing the window downward: the bar is too thin for a dropdown to paint in.
+import { useEffect, useMemo, useState } from "react";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
-import { api, LayoutReply, LINK_COLORS, LINK_HEX } from "./api";
+import { api, LINK_COLORS, LINK_HEX } from "./api";
 import { useStore } from "./store";
+import { panelTitle } from "./Panel";
 
 function lastWeekday(): string {
   const d = new Date();
@@ -21,108 +23,211 @@ const SPEEDS: [string, number][] = [
   ["max", 0],
 ];
 
+const BAR_H = 46;
+type Open = null | "panels" | "baskets" | "details";
+
 export default function Launcher() {
   const status = useStore((s) => s.status);
-  const layoutVersion = useStore((s) => s.layoutVersion);
-  const [layout, setLayout] = useState<LayoutReply | null>(null);
+  const panels = useStore((s) => s.panels);
+  const filters = useStore((s) => s.filters);
+  const filtersError = useStore((s) => s.filtersError);
+  const baskets = useStore((s) => s.baskets);
   const [date, setDate] = useState(lastWeekday());
   const [startAt, setStartAt] = useState("09:00");
   const [speed, setSpeed] = useState(60);
   const [chartColor, setChartColor] = useState("red");
   const [msg, setMsg] = useState<{ text: string; bad: boolean } | null>(null);
-  const [details, setDetails] = useState(false);
-
-  useEffect(() => {
-    api.getLayout().then(setLayout);
-  }, [layoutVersion]);
+  const [open, setOpen] = useState<Open>(null);
+  const [confirmReset, setConfirmReset] = useState(false);
 
   useEffect(() => {
     getCurrentWindow()
-      .setSize(new LogicalSize(window.innerWidth, details ? 360 : 64))
+      .setSize(new LogicalSize(window.innerWidth, open ? 380 : BAR_H + (msg ? 18 : 0)))
       .catch(() => {});
-  }, [details]);
+  }, [open, msg]);
 
   const run = (p: Promise<unknown>, ok?: string) =>
-    p.then((r) => setMsg({ text: typeof r === "string" ? r : ok ?? "", bad: false })).catch((e) => setMsg({ text: String(e), bad: true }));
+    p.then((r) => setMsg(typeof r === "string" && r ? { text: r, bad: false } : ok ? { text: ok, bad: false } : null)).catch((e) => setMsg({ text: String(e), bad: true }));
+
+  const groups = useMemo(() => {
+    const out: string[] = [];
+    for (const g of [...(panels?.panels ?? []).map((p) => p.group), ...(panels?.charts ?? []).map((c) => c.group)]) if (g && !out.includes(g)) out.push(g);
+    return out;
+  }, [panels]);
+  const notShown = useMemo(() => {
+    const shown = new Set((panels?.panels ?? []).flatMap((p) => p.filters));
+    return filters.map((f) => f.name).filter((n) => !shown.has(n));
+  }, [panels, filters]);
 
   const errors = status?.errors ?? 0;
-  const warnings = (status?.warnings ?? []).length + (layout?.layout?.not_displayed.length ? 1 : 0);
-  const screens = layout?.layout?.display.screens ?? [];
+  const warnings = (status?.warnings ?? []).length + (notShown.length ? 1 : 0) + (filtersError ? 1 : 0);
+  const mode = status?.mode ?? "idle";
+  const toggle = (o: Open) => setOpen(open === o ? null : o);
 
   return (
     <div className="launcher">
-      <div className="bar">
-        <span className="brand">TP&nbsp;Scanner</span>
-        <span className="group">
-          {screens.map((s) => (
-            <button key={s.name} title={s.title} onClick={() => run(api.openScreen(s.name))}>
-              {s.name}
-            </button>
-          ))}
+      <div className="menubar">
+        <span className="mlogo">
+          TP<span>SCANNER</span>
         </span>
-        <span className="group">
-          <button onClick={() => run(api.openChart(chartColor))}>+ chart</button>
-          <button
-            className="swatch"
-            title="link colour of the new chart"
-            style={{ background: LINK_HEX[chartColor] }}
-            onClick={() => setChartColor(LINK_COLORS[(LINK_COLORS.indexOf(chartColor as never) + 1) % LINK_COLORS.length])}
-          />
+        {groups.map((g) => (
+          <span key={g} className="mitem" title={`open the ${g} screen's panels`} onClick={() => run(api.openScreen(g))}>
+            {g.toUpperCase()}
+          </span>
+        ))}
+        <span className="msep" />
+        <span className={"mitem " + (open === "panels" ? "on" : "")} onClick={() => toggle("panels")}>
+          Panels ▾
         </span>
-        <span className="group">
-          <button className={status?.mode === "live" ? "on" : ""} onClick={() => run(api.startLive(false))} title="Massive WebSocket, delayed feed">
-            Live
-          </button>
-          <span className="sep">|</span>
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} title="replay day" />
-          <input className="hhmm" value={startAt} onChange={(e) => setStartAt(e.target.value)} title="run fast up to this time (HH:MM ET)" />
-          <select
-            value={speed}
-            onChange={(e) => {
-              const v = Number(e.target.value);
-              setSpeed(v);
-              if (status?.mode === "replay") run(api.setSpeed(v));
-            }}
-          >
-            {SPEEDS.map(([l, v]) => (
-              <option key={l} value={v}>
-                {l}
-              </option>
-            ))}
-          </select>
-          <button className={status?.mode === "replay" ? "on" : ""} onClick={() => run(api.startReplay(date, speed, startAt || null))}>
-            Replay
-          </button>
-          <button onClick={() => run(api.stopSource())}>Stop</button>
+        <span className={"mitem " + (open === "baskets" ? "on" : "")} title="the stocks each filter may draw from" onClick={() => toggle("baskets")}>
+          Baskets ▾
         </span>
-        <span className="group">
-          <button onClick={() => run(api.reloadFilters())} title="re-read filters/*.scan and display.json">
-            Reload filters
-          </button>
+        <span className="mitem" title="a new empty panel" onClick={() => run(api.panelCreate())}>
+          + Panel
         </span>
-        <span className={"status " + (status?.ok ? "ok" : status?.mode === "idle" ? "" : "warn")}>
-          {status ? status.feed : "starting"}
-          {status?.market_time && <> · {status.market_time} ET</>}
-          {status?.delay_s != null && <> · {Math.round(status.delay_s / 60)}m behind</>}
-          {status && <> · {status.bars.toLocaleString()} bars · {status.signals} signals</>}
+        <span className="mitem" onClick={() => run(api.openChart(chartColor))}>
+          + Chart
         </span>
-        <button className={"badge " + (errors > 0 ? "bad" : "")} onClick={() => setDetails(!details)} title="errors and warnings">
-          {errors > 0 ? `${errors} errors` : "0 errors"}
-          {warnings > 0 && ` · ${warnings} ⚠`}
-        </button>
+        <button
+          className="swatch"
+          title="link colour of the next chart"
+          style={{ background: LINK_HEX[chartColor] }}
+          onClick={() => setChartColor(LINK_COLORS[(LINK_COLORS.indexOf(chartColor as never) + 1) % LINK_COLORS.length])}
+        />
+        <span className="msep" />
+        <span className="mitem" title="re-read filters/*.scan" onClick={() => run(api.reloadFilters())}>
+          Reload Filters
+        </span>
+        <span className="mright">
+          <span className={"mbadge " + (mode === "live" ? "badge-live" : mode === "replay" ? "badge-paper" : "badge-idle")}>{mode.toUpperCase()}</span>
+          <span className={"mbadge " + (errors > 0 ? "badge-err" : "badge-idle")} style={{ cursor: "pointer" }} title="errors and warnings" onClick={() => toggle("details")}>
+            {errors} ERR{warnings > 0 && ` · ${warnings} ⚠`}
+          </span>
+        </span>
       </div>
-      {(msg || layout?.error) && (
-        <div className={"msg " + (msg?.bad || layout?.error ? "bad" : "")} onClick={() => setMsg(null)}>
-          {layout?.error ?? msg?.text}
+      <div className="statusbar">
+        <button className={"sb-btn " + (mode === "live" ? "on" : "")} onClick={() => run(api.startLive(false))} title="Massive WebSocket, delayed feed">
+          LIVE
+        </button>
+        <span className="sb-sep" />
+        <input className="sb-in" type="date" value={date} onChange={(e) => setDate(e.target.value)} title="replay day" />
+        <input className="sb-in hhmm" value={startAt} onChange={(e) => setStartAt(e.target.value)} title="run fast up to this time (HH:MM ET)" />
+        <select
+          className="sb-in"
+          value={speed}
+          onChange={(e) => {
+            const v = Number(e.target.value);
+            setSpeed(v);
+            if (mode === "replay") run(api.setSpeed(v));
+          }}
+        >
+          {SPEEDS.map(([l, v]) => (
+            <option key={l} value={v}>
+              {l}
+            </option>
+          ))}
+        </select>
+        <button className={"sb-btn " + (mode === "replay" ? "on" : "")} onClick={() => run(api.startReplay(date, speed, startAt || null))}>
+          REPLAY
+        </button>
+        <button className="sb-btn" onClick={() => run(api.stopSource())}>
+          STOP
+        </button>
+        <span className="sb-sep" />
+        <span className={"sbi " + (status?.ok ? "ok" : mode === "idle" ? "" : "warn")}>{status ? status.feed : "starting"}</span>
+        {status?.market_time && (
+          <span className="sbi">
+            <span className="sbv">{status.market_time}</span> ET
+          </span>
+        )}
+        {status?.delay_s != null && <span className="sbi">{Math.round(status.delay_s / 60)}m behind</span>}
+        {status && (
+          <span className="sbi">
+            <span className="sbv">{status.bars.toLocaleString()}</span> bars · <span className="sbv">{status.signals.toLocaleString()}</span> signals
+          </span>
+        )}
+      </div>
+      {msg && (
+        <div className={"lmsg " + (msg.bad ? "bad" : "")} onClick={() => setMsg(null)}>
+          {msg.text}
         </div>
       )}
-      {details && (
-        <div className="details">
-          {layout?.error && <p className="bad">Layout: {layout.error}</p>}
+      {open === "panels" && (
+        <div className="ldrop">
+          <div className="ldrop-head">
+            Panels ({panels?.panels.length ?? 0})
+            <span style={{ marginLeft: "auto" }} />
+            {confirmReset ? (
+              <>
+                <span className="bad">Close every panel and go back to the Primus screens?</span>
+                <button className="lbtn" onClick={() => (setConfirmReset(false), run(api.resetLayout(), "layout reset to the Primus screens"))}>
+                  Reset
+                </button>
+                <button className="lbtn" onClick={() => setConfirmReset(false)}>
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button className="lbtn" title="back to the Primus screens from display.json" onClick={() => setConfirmReset(true)}>
+                Reset layout…
+              </button>
+            )}
+          </div>
+          {groups.concat("").map((g) => {
+            const ps = (panels?.panels ?? []).filter((p) => p.group === g);
+            if (!ps.length) return null;
+            return (
+              <div key={g || "own"} className="lgroup">
+                <div className="lgroup-name">{g ? g.toUpperCase() : "YOUR PANELS"}</div>
+                {ps.map((p) => (
+                  <div key={p.id} className="lrow">
+                    <span className="ldot" style={{ background: LINK_HEX[p.link] }} />
+                    <span className="lname" onClick={() => run(api.openPanel(p.id))} title="open">
+                      {panelTitle(p)}
+                    </span>
+                    <span className="lsub">{p.filters.length} filters</span>
+                    <button className="lx" title="delete this panel" onClick={() => run(api.panelDelete(p.id))}>
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {open === "baskets" && (
+        <div className="ldrop">
+          <div className="ldrop-head">
+            Baskets ({baskets.length})
+            <span style={{ marginLeft: "auto" }} />
+            <button className="lbtn" onClick={() => run(api.openDialog("basket", "new", null))}>
+              New basket…
+            </button>
+          </div>
+          {baskets.length === 0 && <p>No baskets yet. A basket says which stocks a filter may draw from (type, exchange, price, float, average volume); a filter picks one in its Adjust window.</p>}
+          {baskets.map((b) => (
+            <div key={b.name} className="lrow">
+              <span className="lname" onClick={() => run(api.openDialog("basket", b.name, null))} title="edit">
+                {b.name}
+              </span>
+              <span className="lsub">
+                {[b.types.join("/"), b.exchanges.join("/"), ...b.ranges.map(([k, lo, hi]) => `${k} ${lo ?? ""}–${hi ?? ""}`)].filter(Boolean).join(" · ")}
+              </span>
+              <span className="lsub" style={{ marginLeft: "auto" }}>
+                {b.used_by.length ? `${b.used_by.length} filter${b.used_by.length > 1 ? "s" : ""}` : "unused"}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {open === "details" && (
+        <div className="ldrop">
+          {filtersError && <p className="bad">Filters: {filtersError}</p>}
           {(status?.warnings ?? []).map((w) => (
             <p key={w}>⚠ {w}</p>
           ))}
-          {layout?.layout?.not_displayed.length ? <p>⚠ not on any screen: {layout.layout.not_displayed.join(", ")}</p> : null}
+          {notShown.length > 0 && <p>⚠ on no panel: {notShown.join(", ")}</p>}
           {status?.since && <p>History since {status.since} ET (a reload or source change starts it over).</p>}
           {status && status.reconnects > 0 && <p>Reconnects: {status.reconnects}</p>}
           {status && status.bad_messages > 0 && <p>Bad feed messages: {status.bad_messages}</p>}
@@ -131,6 +236,7 @@ export default function Launcher() {
               {e}
             </p>
           ))}
+          {!filtersError && !(status?.warnings ?? []).length && !notShown.length && !errors && <p>Nothing to report.</p>}
         </div>
       )}
     </div>

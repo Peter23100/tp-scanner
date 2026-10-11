@@ -1,4 +1,5 @@
-//! `filters/display.json`: which screens exist, and which panels and charts each holds.
+//! `filters/display.json`: the Primus screens, the seed for the panel windows (`panels.rs`), and
+//! what the panels need to know about each loaded filter.
 //!
 //! ```json
 //! {"screens": [{"name": "top", "title": "Flush / reversal", "rows": [{"height": 1, "columns": [
@@ -13,11 +14,10 @@
 //! colour sends a clicked symbol to every chart of that colour, so several panels can drive one
 //! chart and one panel can drive several. `height` weights an item within its column (default 1).
 //!
-//! Checked against the loaded filters: an unknown name refuses the layout (a typo would otherwise
-//! show an empty panel forever), and filters that appear in no panel are reported.
+//! The shipped file is checked against the filters by the tests: an unknown name or colour fails
+//! the build's tests, and every filter must appear on some screen.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use tp_scan_engine::compile::{Compiled, Kind, Program, Side};
 
 pub const LINK_COLORS: [&str; 8] = ["red", "blue", "green", "yellow", "orange", "purple", "pink", "cyan"];
@@ -77,8 +77,10 @@ pub struct FilterMeta {
     pub cooldown_s: i64,
     pub columns: Vec<String>,
     pub ranked: bool,
+    pub basket: Option<String>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 pub struct Layout {
     pub display: Display,
@@ -108,13 +110,16 @@ pub fn filter_meta(p: &Program, c: &Compiled) -> Vec<FilterMeta> {
                 cooldown_s: f.cooldown_ms / 1000,
                 columns: def.map(|d| d.columns.iter().map(|c| c.0.to_string()).collect()).unwrap_or_default(),
                 ranked: def.is_some_and(|d| d.rank.is_some()),
+                basket: def.and_then(|d| d.basket.as_deref().map(str::to_string)),
             }
         })
         .collect()
 }
 
 /// Parse and check a layout against the loaded filters.
+#[cfg(test)]
 pub fn check(text: &str, filters: Vec<FilterMeta>) -> Result<Layout, String> {
+    use std::collections::HashSet;
     let display: Display = serde_json::from_str(text).map_err(|e| format!("display.json: {e}"))?;
     let known: HashSet<&str> = filters.iter().map(|f| f.name.as_str()).collect();
     let mut shown = HashSet::new();
@@ -156,7 +161,7 @@ mod tests {
     use super::*;
 
     fn meta(name: &str) -> FilterMeta {
-        FilterMeta { name: name.into(), kind: "trigger", side: "long", hours: "rth".into(), cooldown_s: 60, columns: vec![], ranked: false }
+        FilterMeta { name: name.into(), kind: "trigger", side: "long", hours: "rth".into(), cooldown_s: 60, columns: vec![], ranked: false, basket: None }
     }
 
     #[test]

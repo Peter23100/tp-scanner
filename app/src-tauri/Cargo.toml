@@ -17,7 +17,6 @@ tp-marketdata = { path = "../../crates/tp-marketdata" }
 tp-scan-engine = { path = "../../crates/tp-scan-engine" }
 tp-massive = { path = "../../crates/tp-massive" }
 tauri = { version = "2", features = ["devtools"] }
-tauri-plugin-window-state = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -2,7 +2,7 @@
 // window seeds itself from get_snapshot and then follows the events.
 import { listen } from "@tauri-apps/api/event";
 import { useSyncExternalStore } from "react";
-import { api, ListRowDto, SignalDto, Snapshot, StatusDto } from "./api";
+import { api, BasketDto, FilterMeta, ListRowDto, Panels, SignalDto, Snapshot, StatusDto } from "./api";
 
 const KEEP = 5000;
 
@@ -11,10 +11,14 @@ interface State {
   lists: Record<string, ListRowDto[]>;
   status: StatusDto | null;
   links: Record<string, string>;
-  layoutVersion: number;
+  /** What each loaded filter is (kind, side, columns); empty until the engine has loaded. */
+  filters: FilterMeta[];
+  baskets: BasketDto[];
+  filtersError: string | null;
+  panels: Panels | null;
 }
 
-let state: State = { signals: [], lists: {}, status: null, links: {}, layoutVersion: 0 };
+let state: State = { signals: [], lists: {}, status: null, links: {}, filters: [], baskets: [], filtersError: null, panels: null };
 const subs = new Set<() => void>();
 function set(patch: Partial<State>) {
   state = { ...state, ...patch };
@@ -28,6 +32,9 @@ function subscribe(f: () => void) {
 let started = false;
 // Signals that arrive before the snapshot resolves are buffered, then merged by id.
 let pending: SignalDto[] | null = [];
+
+const loadFilters = () => api.getFilters().then((r) => set({ filters: r.filters, baskets: r.baskets, filtersError: r.error }));
+const loadPanels = () => api.panelsGet().then((panels) => set({ panels }));
 
 export function startStore() {
   if (started) return;
@@ -45,7 +52,8 @@ export function startStore() {
     set({ lists: e.payload.lists, status: e.payload.status });
   });
   listen("scan-reset", () => set({ signals: [], lists: {} }));
-  listen("layout-changed", () => set({ layoutVersion: state.layoutVersion + 1 }));
+  listen("filters-changed", loadFilters);
+  listen("panels-changed", loadPanels);
   listen<{ color: string; symbol: string }>("link-changed", (e) => {
     set({ links: { ...state.links, [e.payload.color]: e.payload.symbol } });
   });
@@ -56,6 +64,8 @@ export function startStore() {
     set({ signals: merged, lists: snap.lists, status: snap.status });
   });
   api.linkGet().then((links) => set({ links: { ...links, ...state.links } }));
+  loadFilters();
+  loadPanels();
 }
 
 export function useStore<T>(pick: (s: State) => T): T {
