@@ -25,7 +25,7 @@ const SPEEDS: [string, number][] = [
 ];
 
 const BAR_H = 46;
-type Open = null | "panels" | "baskets" | "details";
+type Open = null | "panels" | "baskets" | "layouts" | "details";
 
 export default function Launcher() {
   const status = useStore((s) => s.status);
@@ -40,6 +40,13 @@ export default function Launcher() {
   const [msg, setMsg] = useState<{ text: string; bad: boolean } | null>(null);
   const [open, setOpen] = useState<Open>(null);
   const [confirmReset, setConfirmReset] = useState(false);
+  const [layouts, setLayouts] = useState<{ name: string; saved_at: string; windows: number }[]>([]);
+  const [layoutName, setLayoutName] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const refreshLayouts = () => api.layoutsList().then(setLayouts).catch(() => {});
+  useEffect(() => {
+    if (open === "layouts") refreshLayouts();
+  }, [open]);
 
   useEffect(() => {
     getCurrentWindow()
@@ -79,6 +86,9 @@ export default function Launcher() {
         <span className="msep" />
         <span className={"mitem " + (open === "panels" ? "on" : "")} onClick={() => toggle("panels")}>
           Panels ▾
+        </span>
+        <span className={"mitem " + (open === "layouts" ? "on" : "")} title="save the whole desk under a name, and switch between saved desks" onClick={() => toggle("layouts")}>
+          Layouts ▾
         </span>
         <span className={"mitem " + (open === "baskets" ? "on" : "")} title="the stocks each filter may draw from" onClick={() => toggle("baskets")}>
           Baskets ▾
@@ -159,6 +169,12 @@ export default function Launcher() {
           <div className="ldrop-head">
             Panels ({panels?.panels.length ?? 0})
             <span style={{ marginLeft: "auto" }} />
+            <button className="lbtn" title="close the gaps between the open windows, as you have them arranged" onClick={() => run(api.tidyWindows())}>
+              Tidy
+            </button>
+            <button className="lbtn" title="put every open panel and chart back on its Primus grid position" onClick={() => run(api.arrangeWindows())}>
+              Arrange as Primus
+            </button>
             {confirmReset ? (
               <>
                 <span className="bad">Close every panel and go back to the Primus screens?</span>
@@ -196,6 +212,54 @@ export default function Launcher() {
               </div>
             );
           })}
+        </div>
+      )}
+      {open === "layouts" && (
+        <div className="ldrop">
+          <div className="ldrop-head">
+            Layouts ({layouts.length})
+            <span style={{ marginLeft: "auto" }} />
+            <input
+              className="sb-in"
+              style={{ width: 160 }}
+              placeholder="name for the desk as it is now"
+              value={layoutName}
+              onChange={(e) => setLayoutName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && layoutName.trim() && run(api.layoutSave(layoutName).then((m) => (setLayoutName(""), refreshLayouts(), m)))}
+            />
+            <button className="lbtn" disabled={!layoutName.trim()} onClick={() => run(api.layoutSave(layoutName).then((m) => (setLayoutName(""), refreshLayouts(), m)))}>
+              Save current
+            </button>
+          </div>
+          {layouts.length === 0 && <p>No saved layouts. Arrange the windows the way you like, name it above and Save: the open windows, where each sits, and every panel's filters, colour and text size.</p>}
+          {layouts.map((l) => (
+            <div key={l.name} className="lrow">
+              <span className="lname" title="switch to this layout" onClick={() => run(api.layoutLoad(l.name))}>
+                {l.name}
+              </span>
+              <span className="lsub">
+                {l.windows} windows · saved {l.saved_at}
+              </span>
+              <span style={{ marginLeft: "auto" }} />
+              <button className="lbtn" title="replace it with the desk as it is now" onClick={() => run(api.layoutSave(l.name).then((m) => (refreshLayouts(), m)))}>
+                Overwrite
+              </button>
+              {confirmDelete === l.name ? (
+                <>
+                  <button className="lbtn" onClick={() => (setConfirmDelete(null), run(api.layoutDelete(l.name).then((m) => (refreshLayouts(), m))))}>
+                    Delete it
+                  </button>
+                  <button className="lbtn" onClick={() => setConfirmDelete(null)}>
+                    Keep
+                  </button>
+                </>
+              ) : (
+                <button className="lx" title="delete this layout" onClick={() => setConfirmDelete(l.name)}>
+                  ×
+                </button>
+              )}
+            </div>
+          ))}
         </div>
       )}
       {open === "baskets" && (

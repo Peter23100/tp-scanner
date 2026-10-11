@@ -75,6 +75,11 @@ The launcher bar (TradierPro's menubar and status bar):
 - **LEFT / RIGHT / TOP / FOURTH** open that Primus screen's panels and charts, each its own window,
   tiled on its own monitor the first time and wherever you put them after that. **Panels ▾** lists
   every panel (reopen, delete, reset to the Primus layout); **+ Panel** and **+ Chart** add one.
+- **Layouts ▾**: save the whole desk under a name (open windows, where each sits, every panel's
+  filters, colour and text size) and switch between saved desks. **Panels ▾ → Tidy** closes the gaps
+  in the current arrangement; **Arrange as Primus** puts every window back on its Primus grid.
+  Windows also snap: an edge left within ~18 px of a neighbour or the screen edge lines up with it
+  when you let go.
 - **Baskets ▾**: named sets of qualifications (type, exchange, price, float, average volume, ATR)
   a filter can draw from; the editor shows how many symbols pass before you save.
 - **LIVE** (Massive WebSocket; delayed on Starter) or **REPLAY** a past day (downloaded on first

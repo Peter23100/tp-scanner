@@ -99,6 +99,12 @@ struct App {
     chart_cache: Mutex<HashMap<String, Arc<Vec<[f64; 6]>>>>,
     /// Symbol → company name (tickers.csv), read on first use.
     names: Mutex<Option<Arc<HashMap<String, String>>>>,
+    /// Window label → when it last moved or resized (by the user). A window still for a moment
+    /// after that snaps its edges to its neighbours.
+    moved: Mutex<HashMap<String, std::time::Instant>>,
+    /// Window label → the place a snap just put it, so the move the snap itself causes isn't
+    /// taken for the user's.
+    snapped: Mutex<HashMap<String, Geom>>,
 }
 
 fn write_json<T: Serialize>(path: &std::path::Path, v: &T) {
@@ -414,6 +420,120 @@ fn ticker_name(app: State<'_, App>, symbol: String) -> Option<String> {
     g.as_ref().and_then(|m| m.get(symbol.trim().to_uppercase().as_str()).cloned())
 }
 
+// ---------------------------------------------------------------------------------------------
+// Named layouts: the whole desk under a name (which windows are open, where every one sits, and
+// the panels' definitions: filters, colours, follow, sound, text size). Files in `layouts/`.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SavedLayout {
+    name: String,
+    saved_at: String,
+    windows: Vec<WinRec>,
+    geom: HashMap<String, Geom>,
+    panels: Panels,
+}
+
+#[derive(Serialize)]
+struct LayoutInfo {
+    name: String,
+    saved_at: String,
+    windows: usize,
+}
+
+fn layout_path(app: &App, name: &str) -> Result<PathBuf, String> {
+    let n = name.trim();
+    if n.is_empty() || n.len() > 40 || !n.chars().all(|c| c.is_ascii_alphanumeric() || " -_".contains(c)) {
+        return Err("a layout name is letters, digits, spaces, - or _ (up to 40)".into());
+    }
+    Ok(app.data_dir.join("layouts").join(format!("{n}.json")))
+}
+
+#[tauri::command]
+fn layouts_list(app: State<'_, App>) -> Vec<LayoutInfo> {
+    let mut out: Vec<LayoutInfo> = std::fs::read_dir(app.data_dir.join("layouts"))
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+        .filter_map(|t| serde_json::from_str::<SavedLayout>(t.trim_start_matches('\u{feff}')).ok())
+        .map(|l| LayoutInfo { name: l.name, saved_at: l.saved_at, windows: l.windows.len() })
+        .collect();
+    out.sort_by_key(|l| l.name.to_lowercase());
+    out
+}
+
+/// Save the desk as it is now (overwrites a layout of the same name).
+#[tauri::command]
+fn layout_save(app: State<'_, App>, name: String) -> Result<String, String> {
+    let path = layout_path(&app, &name)?;
+    let ui = app.ui.lock().expect("ui").clone();
+    let keep = |l: &str| snappable(l);
+    let windows: Vec<WinRec> = ui.windows.iter().filter(|r| keep(&r.label)).cloned().collect();
+    let geom: HashMap<String, Geom> = ui.geom.iter().filter(|(l, _)| *l == "launcher" || windows.iter().any(|r| &r.label == *l)).map(|(l, g)| (l.clone(), *g)).collect();
+    let layout = SavedLayout {
+        name: name.trim().to_string(),
+        saved_at: now_stamp().0 + &tp_marketdata::time::Ts::from_millis(scanner::now_ms()).expect("now").ny().format(" %H:%M").to_string(),
+        windows,
+        geom,
+        panels: app.panels.lock().expect("panels").clone(),
+    };
+    std::fs::create_dir_all(path.parent().expect("dir")).map_err(|e| e.to_string())?;
+    write_json(&path, &layout);
+    Ok(format!("layout \"{}\" saved ({} windows)", layout.name, layout.windows.len()))
+}
+
+/// Switch to a saved layout: its panels, its windows where it had them. Windows it doesn't have
+/// close (their panels stay listed under Panels ▾ only if the layout has them).
+#[tauri::command]
+async fn layout_load(handle: AppHandle, app: State<'_, App>, name: String) -> Result<String, String> {
+    let path = layout_path(&app, &name)?;
+    let text = std::fs::read_to_string(&path).map_err(|_| format!("no layout \"{}\"", name.trim()))?;
+    let layout: SavedLayout = serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(|e| format!("{}: {e}", path.display()))?;
+    *app.panels.lock().expect("panels") = layout.panels.clone();
+    app.save_panels(&handle);
+    let wanted: Vec<&str> = layout.windows.iter().map(|r| r.label.as_str()).collect();
+    for (label, w) in handle.webview_windows() {
+        if snappable(&label) && label != "launcher" && !wanted.contains(&label.as_str()) {
+            let _ = w.destroy();
+        }
+    }
+    {
+        let mut ui = app.ui.lock().expect("ui");
+        ui.geom.extend(layout.geom.iter().map(|(l, g)| (l.clone(), *g)));
+        ui.windows.retain(|r| !snappable(&r.label));
+        ui.windows.extend(layout.windows.iter().cloned());
+    }
+    app.save_ui();
+    for rec in &layout.windows {
+        match handle.get_webview_window(&rec.label) {
+            Some(w) => {
+                if let Some(g) = layout.geom.get(&rec.label).filter(|g| on_screen(&handle, g)) {
+                    let _ = w.unminimize();
+                    let _ = w.set_size(PhysicalSize::new(g.w, g.h));
+                    let _ = w.set_position(PhysicalPosition::new(g.x, g.y));
+                }
+            }
+            None => {
+                if let Err(e) = open_window(&handle, &app, rec, None) {
+                    eprintln!("layout {}: {}: {e}", layout.name, rec.label);
+                }
+            }
+        }
+    }
+    if let (Some(g), Some(w)) = (layout.geom.get("launcher").filter(|g| on_screen(&handle, g)), handle.get_webview_window("launcher")) {
+        let _ = w.set_position(PhysicalPosition::new(g.x, g.y));
+        let _ = w.set_size(PhysicalSize::new(g.w, g.h));
+    }
+    Ok(format!("layout \"{}\" loaded", layout.name))
+}
+
+#[tauri::command]
+fn layout_delete(app: State<'_, App>, name: String) -> Result<String, String> {
+    let path = layout_path(&app, &name)?;
+    std::fs::remove_file(&path).map_err(|_| format!("no layout \"{}\"", name.trim()))?;
+    Ok(format!("layout \"{}\" deleted", name.trim()))
+}
+
 /// Tell the engine which symbol a chart shows, so its live bars are forwarded.
 #[tauri::command]
 fn chart_watch(app: State<'_, App>, id: String, symbol: Option<String>) {
@@ -578,15 +698,22 @@ fn open_window(handle: &AppHandle, app: &App, rec: &WinRec, tile: Option<(String
             _ => g.charts.iter().find(|c| c.label == rec.label).and_then(|c| c.tile.map(|t| (c.group.clone(), t))),
         }
     });
-    if let Some(g) = saved {
-        let _ = win.set_size(PhysicalSize::new(g.w, g.h));
-        let _ = win.set_position(PhysicalPosition::new(g.x, g.y));
-    } else if let Some((group, t)) = tile {
-        if let Some(m) = group_monitor(handle, app, &group) {
-            place_on_tile(&win, &m, t);
+    let place = |win: &WebviewWindow| {
+        if let Some(g) = saved {
+            let _ = win.set_size(PhysicalSize::new(g.w, g.h));
+            let _ = win.set_position(PhysicalPosition::new(g.x, g.y));
+        } else if let Some((group, t)) = &tile {
+            if let Some(m) = group_monitor(handle, app, group) {
+                place_on_tile(win, &m, *t);
+            }
         }
-    }
-    win.show().map_err(|e| e.to_string())
+    };
+    place(&win);
+    win.show().map_err(|e| e.to_string())?;
+    // A frameless window measures its frame as if it had a title bar until it's shown (it came
+    // back 30px taller): place it again, now that it's visible.
+    place(&win);
+    Ok(())
 }
 
 /// Whether a saved place is still reachable: its title bar's left end is on a connected monitor.
@@ -603,19 +730,18 @@ fn on_screen(handle: &AppHandle, g: &Geom) -> bool {
     })
 }
 
-/// Put a window's outer frame on a fraction of a monitor's work area.
+/// Put a window's visible rectangle exactly on a fraction of a monitor's work area, so tiled
+/// neighbours touch with no gap (their invisible resize borders overlap instead).
 fn place_on_tile(win: &WebviewWindow, m: &tauri::Monitor, [fx, fy, fw, fh]: [f64; 4]) {
     let wa = m.work_area();
     let (ax, ay, aw, ah) = (wa.position.x as f64, wa.position.y as f64, wa.size.width as f64, wa.size.height as f64);
-    // The frame (title bar, borders) is outer minus inner; the tile is the outer rectangle.
-    let (dw, dh) = match (win.outer_size(), win.inner_size()) {
-        (Ok(o), Ok(i)) => (o.width.saturating_sub(i.width) as f64, o.height.saturating_sub(i.height) as f64),
-        _ => (0.0, 0.0),
-    };
-    let w = ((fw * aw) - dw).max(160.0) as u32;
-    let h = ((fh * ah) - dh).max(60.0) as u32;
-    let _ = win.set_size(PhysicalSize::new(w, h));
-    let _ = win.set_position(PhysicalPosition::new((ax + fx * aw) as i32, (ay + fy * ah) as i32));
+    let px = |v: f64| v.round() as i32;
+    let rect = (px(ax + fx * aw), px(ay + fy * ah), px(ax + (fx + fw) * aw), px(ay + (fy + fh) * ah));
+    let f = frame_of(win).unwrap_or(Frame { l: 0, t: 0, r: 0, b: 0, inset_l: 0, inset_t: 0 });
+    let g = set_frame(win, &f, rect);
+    if let Some(app) = win.app_handle().try_state::<App>() {
+        app.snapped.lock().expect("snapped").insert(win.label().to_string(), g);
+    }
 }
 
 fn remember(app: &App, rec: WinRec) {
@@ -845,11 +971,16 @@ async fn open_dialog(handle: AppHandle, app: State<'_, App>, kind: String, filte
         .build()
         .map_err(|e| e.to_string())?;
     let saved = app.ui.lock().expect("ui").geom.get(&label).copied().filter(|g| on_screen(&handle, g));
-    if let Some(g) = saved {
-        let _ = win.set_size(PhysicalSize::new(g.w, g.h));
-        let _ = win.set_position(PhysicalPosition::new(g.x, g.y));
-    }
-    win.show().map_err(|e| e.to_string())
+    let place = |win: &WebviewWindow| {
+        if let Some(g) = saved {
+            let _ = win.set_size(PhysicalSize::new(g.w, g.h));
+            let _ = win.set_position(PhysicalPosition::new(g.x, g.y));
+        }
+    };
+    place(&win);
+    win.show().map_err(|e| e.to_string())?;
+    place(&win); // again once visible (see open_window)
+    Ok(())
 }
 
 fn filters_dir() -> PathBuf {
@@ -875,6 +1006,147 @@ fn note_geometry(w: &tauri::Window) {
         ui.geom.insert(w.label().to_string(), g);
         app.dirty.store(true, Ordering::SeqCst);
     }
+    drop(ui);
+    if snappable(w.label()) && app.snapped.lock().expect("snapped").get(w.label()) != Some(&g) {
+        app.moved.lock().expect("moved").insert(w.label().to_string(), std::time::Instant::now());
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Lining windows up. Windows without a title bar still have an invisible resize border outside
+// what you see, so all of this works on the visible (client) rectangle: placing by the outer
+// rectangle would leave a gap of two borders between neighbours.
+
+/// Panels, charts and the launcher line up with each other; tool windows (why, adjust, basket)
+/// float free.
+fn snappable(label: &str) -> bool {
+    label == "launcher" || label.starts_with("panel-") || label.starts_with("chart-")
+}
+
+/// A window's visible rectangle (left, top, right, bottom) and how far its outer frame reaches
+/// beyond it on the left and top, physical pixels.
+#[derive(Clone, Copy, Debug)]
+struct Frame {
+    l: i32,
+    t: i32,
+    r: i32,
+    b: i32,
+    inset_l: i32,
+    inset_t: i32,
+}
+
+fn frame_of(w: &WebviewWindow) -> Option<Frame> {
+    let (op, ip, is) = (w.outer_position().ok()?, w.inner_position().ok()?, w.inner_size().ok()?);
+    Some(Frame { l: ip.x, t: ip.y, r: ip.x + is.width as i32, b: ip.y + is.height as i32, inset_l: ip.x - op.x, inset_t: ip.y - op.y })
+}
+
+/// Put a window's visible rectangle exactly at (l, t, r, b). Returns the geometry it will report.
+fn set_frame(w: &WebviewWindow, f: &Frame, (l, t, r, b): (i32, i32, i32, i32)) -> Geom {
+    let (wd, ht) = ((r - l).max(60) as u32, (b - t).max(40) as u32);
+    let _ = w.set_size(PhysicalSize::new(wd, ht));
+    let _ = w.set_position(PhysicalPosition::new(l - f.inset_l, t - f.inset_t));
+    Geom { x: l - f.inset_l, y: t - f.inset_t, w: wd, h: ht }
+}
+
+/// How close (physical px) an edge must be to another to snap to it.
+const SNAP: i32 = 18;
+
+/// The nearest of `candidates` to `v`, if within SNAP.
+fn nearest(v: i32, candidates: &[i32]) -> Option<i32> {
+    candidates.iter().copied().filter(|c| (c - v).abs() <= SNAP).min_by_key(|c| (c - v).abs())
+}
+
+/// Snap one window's edges to its neighbours' edges and its monitor's work area. An edge snaps
+/// only to windows beside it (overlapping on the other axis). One edge snapping moves the window;
+/// both snapping fits it to the gap. Returns whether it moved.
+fn snap_window(handle: &AppHandle, label: &str) -> bool {
+    let Some(w) = handle.get_webview_window(label) else { return false };
+    if w.is_minimized().unwrap_or(true) || w.is_maximized().unwrap_or(true) || !w.is_visible().unwrap_or(false) {
+        return false;
+    }
+    let Some(f) = frame_of(&w) else { return false };
+    let others: Vec<Frame> = handle
+        .webview_windows()
+        .iter()
+        .filter(|(l, o)| *l != label && snappable(l) && o.is_visible().unwrap_or(false) && !o.is_minimized().unwrap_or(true))
+        .filter_map(|(_, o)| frame_of(o))
+        .collect();
+    let (cx, cy) = ((f.l + f.r) / 2, (f.t + f.b) / 2);
+    let wa = handle.available_monitors().ok().and_then(|ms| {
+        ms.into_iter().find_map(|m| {
+            let a = m.work_area();
+            let (x, y, wd, ht) = (a.position.x, a.position.y, a.size.width as i32, a.size.height as i32);
+            (cx >= x && cx < x + wd && cy >= y && cy < y + ht).then_some((x, y, x + wd, y + ht))
+        })
+    });
+    let beside_v = |o: &Frame| o.t < f.b + SNAP && o.b > f.t - SNAP;
+    let beside_h = |o: &Frame| o.l < f.r + SNAP && o.r > f.l - SNAP;
+    let mut xl: Vec<i32> = others.iter().filter(|o| beside_v(o)).flat_map(|o| [o.r, o.l]).collect();
+    let mut xr = xl.clone();
+    let mut yt: Vec<i32> = others.iter().filter(|o| beside_h(o)).flat_map(|o| [o.b, o.t]).collect();
+    let mut yb = yt.clone();
+    if let Some((x0, y0, x1, y1)) = wa {
+        xl.push(x0);
+        xr.push(x1);
+        yt.push(y0);
+        yb.push(y1);
+    }
+    let fit = |a: i32, b: i32, na: Option<i32>, nb: Option<i32>| match (na, nb) {
+        (Some(a2), Some(b2)) if b2 - a2 >= 40 => (a2, b2),
+        (Some(a2), _) => (a2, b + (a2 - a)),
+        (None, Some(b2)) => (a + (b2 - b), b2),
+        _ => (a, b),
+    };
+    let (l, r) = fit(f.l, f.r, nearest(f.l, &xl), nearest(f.r, &xr));
+    let (t, b) = fit(f.t, f.b, nearest(f.t, &yt), nearest(f.b, &yb));
+    if (l, t, r, b) == (f.l, f.t, f.r, f.b) {
+        return false;
+    }
+    let g = set_frame(&w, &f, (l, t, r, b));
+    handle.state::<App>().snapped.lock().expect("snapped").insert(label.to_string(), g);
+    true
+}
+
+/// Close the gaps between every open panel and chart, as they are now arranged.
+#[tauri::command]
+async fn tidy_windows(handle: AppHandle) -> Result<String, String> {
+    let labels: Vec<String> = handle.webview_windows().keys().filter(|l| snappable(l)).cloned().collect();
+    let mut moved = 0;
+    for _ in 0..3 {
+        let mut any = false;
+        for l in &labels {
+            if snap_window(&handle, l) {
+                moved += 1;
+                any = true;
+            }
+        }
+        if !any {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(120));
+    }
+    Ok(format!("{moved} window edge adjustments"))
+}
+
+/// Every open panel and group chart back on its Primus grid tile.
+#[tauri::command]
+async fn arrange_windows(handle: AppHandle, app: State<'_, App>) -> Result<String, String> {
+    let tiles: Vec<(String, String, [f64; 4])> = {
+        let g = app.panels.lock().expect("panels");
+        g.panels
+            .iter()
+            .filter_map(|p| p.tile.map(|t| (format!("panel-{}", p.id), p.group.clone(), t)))
+            .chain(g.charts.iter().filter_map(|c| c.tile.map(|t| (c.label.clone(), c.group.clone(), t))))
+            .collect()
+    };
+    let mut n = 0;
+    for (label, group, t) in tiles {
+        let (Some(w), Some(m)) = (handle.get_webview_window(&label), group_monitor(&handle, &app, &group)) else { continue };
+        let _ = w.unminimize();
+        place_on_tile(&w, &m, t);
+        n += 1;
+    }
+    Ok(format!("{n} windows arranged on the Primus grid"))
 }
 
 fn main() {
@@ -920,6 +1192,8 @@ fn main() {
             rest,
             chart_cache: Mutex::new(HashMap::new()),
             names: Mutex::new(None),
+            moved: Mutex::new(HashMap::new()),
+            snapped: Mutex::new(HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             get_filters,
@@ -950,6 +1224,12 @@ fn main() {
             filter_save,
             filter_undo,
             basket_count,
+            tidy_windows,
+            arrange_windows,
+            layouts_list,
+            layout_save,
+            layout_load,
+            layout_delete,
             open_dialog
         ])
         .setup(move |app| {
@@ -965,6 +1245,28 @@ fn main() {
                     }
                 })
                 .expect("spawn engine thread");
+            // A window the user moved or resized snaps once it has been still for a moment.
+            std::thread::Builder::new()
+                .name("snapper".into())
+                .spawn({
+                    let handle = handle.clone();
+                    move || loop {
+                        std::thread::sleep(Duration::from_millis(200));
+                        let app = handle.state::<App>();
+                        let due: Vec<String> = {
+                            let mut m = app.moved.lock().expect("moved");
+                            let due: Vec<String> = m.iter().filter(|(_, t)| t.elapsed() >= Duration::from_millis(450)).map(|(l, _)| l.clone()).collect();
+                            for l in &due {
+                                m.remove(l);
+                            }
+                            due
+                        };
+                        for l in due {
+                            snap_window(&handle, &l);
+                        }
+                    }
+                })
+                .expect("spawn snapper");
             // Geometry is saved a second after the last move, not on every pixel of a drag.
             std::thread::Builder::new()
                 .name("ui-saver".into())
