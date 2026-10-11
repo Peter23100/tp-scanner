@@ -1,0 +1,18 @@
+[package]
+name = "tp-massive"
+description = "Massive (ex-Polygon) market data: the live WebSocket source, REST reference data, flat files"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+tp-marketdata = { path = "../tp-marketdata" }
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest = { version = "0.13", features = ["blocking", "json", "gzip"] }
+tokio = { version = "1", features = ["rt", "net", "time", "macros"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+rusty-s3 = "0.8"
+url = "2"

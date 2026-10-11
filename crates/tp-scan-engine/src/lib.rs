@@ -5,6 +5,7 @@
 //! feed run exactly the same code.
 
 pub mod compile;
+pub mod daily;
 pub mod engine;
 pub mod expr;
 pub mod instrument;

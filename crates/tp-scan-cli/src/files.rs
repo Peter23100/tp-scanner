@@ -5,16 +5,11 @@ use std::collections::HashMap;
 use std::path::Path;
 use tp_marketdata::bar::Bar;
 use tp_marketdata::price::{Adjusted, Price};
-use tp_marketdata::time::{SessionDate, Ts};
+use tp_marketdata::time::Ts;
 use tp_scan_engine::engine::DailyProvider;
-use tp_scan_engine::state::DailyRef;
 
 pub const DAILY_HEADER: &str = "symbol,date,open,high,low,close,volume";
 pub const FLOAT_HEADER: &str = "symbol,float_shares";
-
-/// How many prior days a reference is built from: a year covers the prior calendar month, a
-/// warm daily EMA20 (seed weight ~1e-11) and ATR14.
-const HISTORY_DAYS: usize = 260;
 
 fn rows<'a>(path: &Path, text: &'a str, header: &str) -> Result<Vec<(usize, Vec<&'a str>)>, String> {
     let mut out = vec![];
@@ -68,15 +63,9 @@ pub fn read_daily(path: &Path) -> Result<HashMap<String, Vec<Bar<Adjusted>>>, St
     Ok(out)
 }
 
-/// For each (symbol, session): the reference built from that symbol's days strictly before the
-/// session, so a replay can never see the day it is replaying.
+/// See [`tp_scan_engine::daily::history_provider`].
 pub fn provider(daily: HashMap<String, Vec<Bar<Adjusted>>>) -> DailyProvider {
-    Box::new(move |sym, session: SessionDate| {
-        let bars = daily.get(sym)?;
-        let cut = bars.partition_point(|b| b.session_date() < session);
-        let hist = &bars[cut.saturating_sub(HISTORY_DAYS)..cut];
-        DailyRef::from_history(session, hist, 14, 20).ok()
-    })
+    tp_scan_engine::daily::history_provider(daily)
 }
 
 pub fn read_float(path: &Path) -> Result<Vec<(String, f64)>, String> {
@@ -98,6 +87,7 @@ pub fn read_float(path: &Path) -> Result<Vec<(String, f64)>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tp_marketdata::time::SessionDate;
 
     fn tmp(name: &str, text: &str) -> std::path::PathBuf {
         let p = std::env::temp_dir().join(format!("tp-scan-cli-{}-{name}", std::process::id()));

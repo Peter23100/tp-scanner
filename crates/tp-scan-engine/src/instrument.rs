@@ -40,6 +40,16 @@ impl<W: Write> JsonlSink<W> {
         self.lines
     }
 
+    /// Push buffered lines out (a long-running live session flushes periodically so a crash
+    /// loses seconds, not the day). The error, if any, is kept for [`JsonlSink::finish`].
+    pub fn flush(&mut self) {
+        if self.first_io_error.is_none() {
+            if let Err(e) = self.out.flush() {
+                self.first_io_error = Some(e);
+            }
+        }
+    }
+
     /// Flush and return the writer, or the first write error. Writes can't fail loudly
     /// mid-scan without stopping it, so they fail loudly here.
     pub fn finish(mut self) -> io::Result<W> {

@@ -14,3 +14,4 @@ tp-marketdata = { path = "../tp-marketdata" }
 tp-scan-engine = { path = "../tp-scan-engine" }
 chrono.workspace = true
 flate2 = "1"
+tp-massive = { path = "../tp-massive" }

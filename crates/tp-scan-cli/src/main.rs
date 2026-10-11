@@ -3,7 +3,17 @@
 //! ```text
 //! tp-scan check <filters-dir>
 //! tp-scan replay --filters <dir> --bars <file> [options]
+//! tp-scan sync [--days N]
+//! tp-scan fetch-day YYYY-MM-DD
+//! tp-scan live --filters <dir> [--realtime] [--jsonl <file>] [--quiet]
 //! ```
+//!
+//! `sync` fills the local Massive cache (`%LOCALAPPDATA%\tp-scanner`): every US stock's daily bar
+//! for the last N calendar days (default 400; only missing days are fetched), the splits, and the
+//! free float. `fetch-day` downloads one day's full-market minute-bar flat file for `replay
+//! --massive`. `live` runs the filters on Massive's WebSocket (`MASSIVE_API_KEY`; the delayed feed
+//! unless `--realtime`) and prints signals as they fire. `replay --cache` and `live` take the daily
+//! references and float from the cache.
 //!
 //! Replay options:
 //!
@@ -16,6 +26,7 @@
 //! | `--jsonl FILE` | write signals and list changes as JSON lines |
 //! | `--instrument` | with `--jsonl`, also every evaluation's measurement vector (stage 4) |
 //! | `--explain FILTER:SYMBOL` | after the replay, show why FILTER is or isn't true for SYMBOL (repeatable) |
+//! | `--cache` | daily references and float from the `sync` cache (instead of `--daily` / `--float`) |
 //! | `--quiet` | don't print each signal |
 //!
 //! Output: one line per signal, the stats, and every non-empty list at the end of the replay.
@@ -36,13 +47,19 @@ const USAGE: &str = "usage:
   tp-scan check <filters-dir>
   tp-scan replay --filters <dir> --bars <file> [--bars <file>...] [--massive] [--seconds]
                  [--daily <file>] [--float <file>] [--jsonl <file>] [--instrument]
-                 [--explain FILTER:SYMBOL] [--quiet]";
+                 [--cache] [--explain FILTER:SYMBOL] [--quiet]
+  tp-scan sync [--days N]
+  tp-scan fetch-day YYYY-MM-DD
+  tp-scan live --filters <dir> [--realtime] [--jsonl <file>] [--quiet]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let r = match args.first().map(String::as_str) {
         Some("check") if args.len() == 2 => check(Path::new(&args[1])),
         Some("replay") => parse_replay(&args[1..]).and_then(|o| replay(&o)),
+        Some("sync") => sync(&args[1..]),
+        Some("fetch-day") if args.len() == 2 => fetch_day(&args[1]),
+        Some("live") => live(&args[1..]),
         _ => Err(USAGE.to_string()),
     };
     match r {
@@ -114,6 +131,7 @@ struct ReplayOpts {
     instrument: bool,
     explain: Vec<(String, String)>,
     quiet: bool,
+    cache: bool,
 }
 
 fn parse_replay(args: &[String]) -> Result<ReplayOpts, String> {
@@ -136,6 +154,7 @@ fn parse_replay(args: &[String]) -> Result<ReplayOpts, String> {
             "--seconds" => o.seconds = true,
             "--instrument" => o.instrument = true,
             "--quiet" => o.quiet = true,
+            "--cache" => o.cache = true,
             _ => return Err(format!("unknown option `{a}`\n{USAGE}")),
         }
     }
@@ -144,6 +163,9 @@ fn parse_replay(args: &[String]) -> Result<ReplayOpts, String> {
     }
     if o.instrument && o.jsonl.is_none() {
         return Err("--instrument writes to --jsonl; give one".into());
+    }
+    if o.cache && (o.daily.is_some() || o.float.is_some()) {
+        return Err("--cache replaces --daily and --float; give one or the other".into());
     }
     if o.massive && o.seconds {
         return Err("Massive minute-aggregate files are minute bars; drop --seconds".into());
@@ -231,6 +253,9 @@ fn replay(o: &ReplayOpts) -> Result<(), String> {
         eprintln!("daily history: {} symbols", daily.len());
         engine.set_daily_provider(files::provider(daily));
     }
+    if o.cache {
+        load_cache(&mut engine)?;
+    }
     if let Some(p) = &o.float {
         let floats = files::read_float(p)?;
         eprintln!("float: {} symbols", floats.len());
@@ -287,4 +312,153 @@ fn replay(o: &ReplayOpts) -> Result<(), String> {
         eprintln!("wrote {lines} json lines");
     }
     Ok(())
+}
+
+fn today_ny() -> chrono::NaiveDate {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_millis() as i64;
+    tp_marketdata::time::Ts::from_millis(now).expect("now").ny().date_naive()
+}
+
+fn mass(e: tp_massive::MassiveError) -> String {
+    e.to_string()
+}
+
+/// Give the engine the cached daily references (split-adjusted per session) and float.
+fn load_cache(engine: &mut Engine) -> Result<(), String> {
+    let data = tp_massive::data_dir().map_err(mass)?;
+    let from = today_ny() - chrono::Duration::days(tp_massive::daily_cache::DEFAULT_CALENDAR_DAYS + 30);
+    let dir = data.join("daily");
+    if !dir.exists() {
+        return Err(format!("no daily cache at {}: run `tp-scan sync` first", dir.display()));
+    }
+    let raw = tp_massive::daily_cache::RawDaily::load(&dir, from).map_err(mass)?;
+    eprintln!("daily cache: {} days, {} symbols", raw.days, raw.symbols());
+    engine.set_daily_provider(tp_scan_engine::daily::provider_from(move |sym, session| {
+        raw.adjusted_history(sym, session, tp_scan_engine::daily::HISTORY_DAYS)
+    }));
+    let fp = data.join("float.csv");
+    if fp.exists() {
+        let floats = files::read_float(&fp)?;
+        eprintln!("float: {} symbols", floats.len());
+        for (sym, shares) in floats {
+            engine.set_reference(&sym, tp_scan_engine::state::Reference { float_shares: Some(shares) });
+        }
+    } else {
+        eprintln!("⚠ no float cache: float filters can't fire (run `tp-scan sync`)");
+    }
+    Ok(())
+}
+
+fn sync(args: &[String]) -> Result<(), String> {
+    let days = match args {
+        [] => tp_massive::daily_cache::DEFAULT_CALENDAR_DAYS,
+        [f, n] if f == "--days" => n.parse().map_err(|_| format!("--days `{n}` is not a number"))?,
+        _ => return Err(USAGE.to_string()),
+    };
+    let key = tp_massive::Secret::from_env(tp_massive::API_KEY_VAR).map_err(mass)?;
+    let rest = tp_massive::rest::Rest::new(key).map_err(mass)?;
+    let data = tp_massive::data_dir().map_err(mass)?;
+    let started = std::time::Instant::now();
+    let report = tp_massive::daily_cache::refresh(&rest, &data.join("daily"), today_ny(), days, &|done, total| {
+        if done % 20 == 0 || done == total {
+            eprintln!("  daily bars: {done}/{total} days");
+        }
+    })
+    .map_err(mass)?;
+    println!(
+        "daily: {} fetched, {} already cached, {} closed days; {} splits  [{:.0}s]",
+        report.fetched,
+        report.already_cached,
+        report.closed,
+        report.splits,
+        started.elapsed().as_secs_f64()
+    );
+    match rest.floats() {
+        Ok(f) => {
+            let mut text = String::from("symbol,float_shares\n");
+            for (s, v) in &f {
+                text.push_str(&format!("{s},{v}\n"));
+            }
+            let p = data.join("float.csv");
+            std::fs::write(&p, text).map_err(|e| format!("{}: {e}", p.display()))?;
+            println!("float: {} symbols", f.len());
+        }
+        Err(e) => println!("⚠ float not fetched ({e}): float filters can't fire"),
+    }
+    match rest.upcoming_holidays() {
+        Ok(h) => {
+            for x in &h {
+                let early = x.early_close.map_or(String::new(), |t| format!(" (closes {})", t.ny().format("%H:%M")));
+                println!("  holiday {} {}{early}", x.date, x.name);
+            }
+        }
+        Err(e) => println!("⚠ holidays not fetched: {e}"),
+    }
+    Ok(())
+}
+
+fn fetch_day(date: &str) -> Result<(), String> {
+    let d = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").map_err(|e| format!("date `{date}`: {e}"))?;
+    let id = tp_massive::Secret::from_env(tp_massive::S3_KEY_ID_VAR).map_err(mass)?;
+    let secret = tp_massive::Secret::from_env(tp_massive::S3_SECRET_VAR).map_err(mass)?;
+    let data = tp_massive::data_dir().map_err(mass)?;
+    let p = tp_massive::flatfiles::fetch_minute_aggs(&id, &secret, &data, d).map_err(mass)?;
+    println!("{}", p.display());
+    Ok(())
+}
+
+fn live(args: &[String]) -> Result<(), String> {
+    let (mut filters, mut realtime, mut jsonl, mut quiet) = (None, false, None, false);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--filters" => filters = Some(PathBuf::from(it.next().ok_or("--filters needs a value")?)),
+            "--jsonl" => jsonl = Some(PathBuf::from(it.next().ok_or("--jsonl needs a value")?)),
+            "--realtime" => realtime = true,
+            "--quiet" => quiet = true,
+            _ => return Err(format!("unknown option `{a}`\n{USAGE}")),
+        }
+    }
+    let filters = filters.ok_or(format!("live needs --filters\n{USAGE}"))?;
+    let program = load_dir(&filters).map_err(|e| e.to_string())?;
+    let mut engine = Engine::new(&program).map_err(|e| e.to_string())?;
+    load_cache(&mut engine)?;
+    let jsonl = match &jsonl {
+        Some(p) => Some(JsonlSink::new(BufWriter::new(File::create(p).map_err(|e| format!("{}: {e}", p.display()))?), false)),
+        None => None,
+    };
+    let mut sink = Console { jsonl, quiet, signals: 0, errors: vec![] };
+    let key = tp_massive::Secret::from_env(tp_massive::API_KEY_VAR).map_err(mass)?;
+    let url = if realtime { tp_massive::ws::REALTIME_URL } else { tp_massive::ws::DELAYED_URL };
+    eprintln!("connecting to {url} (AM.*)");
+    let mut src = tp_massive::ws::LiveSource::start(key, url, "AM.*");
+    let mut last_report = std::time::Instant::now();
+    loop {
+        match src.next_timeout(std::time::Duration::from_secs(1)) {
+            tp_massive::ws::Poll::Event(e) => engine.on_event(&e, &mut sink),
+            tp_massive::ws::Poll::Timeout => {}
+            tp_massive::ws::Poll::Closed => break,
+        }
+        if last_report.elapsed() >= std::time::Duration::from_secs(30) {
+            last_report = std::time::Instant::now();
+            let st = src.status();
+            let es = engine.stats();
+            eprintln!(
+                "[feed] {:?}  bars={} newest={} bad={} reconnects={}  signals={} errors={}{}",
+                st.state,
+                st.bars,
+                st.last_bar_start.map_or("-".into(), |t| t.ny().format("%H:%M").to_string()),
+                st.bad_messages,
+                st.reconnects,
+                es.signals,
+                es.errors,
+                st.last_error.map_or(String::new(), |e| format!("  last error: {e}"))
+            );
+            if let Some(j) = sink.jsonl.as_mut() {
+                j.flush();
+            }
+        }
+    }
+    let st = src.status();
+    Err(format!("feed ended: {:?} {}", st.state, st.server_message.unwrap_or_default()))
 }
