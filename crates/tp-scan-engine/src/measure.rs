@@ -387,7 +387,7 @@ mod tests {
     fn reference_and_auction_data() {
         let mut s = minutes(2);
         assert_eq!(Measure::Float.eval(&s), None);
-        s.set_reference(Reference { float_shares: Some(12e6) });
+        s.set_reference(Reference { float_shares: Some(12e6), ..Default::default() });
         assert_eq!(Measure::Float.eval(&s), Some(12e6));
 
         assert_eq!(Measure::IndBid.eval(&s), None);

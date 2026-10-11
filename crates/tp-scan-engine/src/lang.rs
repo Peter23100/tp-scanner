@@ -42,8 +42,8 @@
 //! Every builtin is listed in [`BARE`] and [`CALLS`]; a name that is neither is a user field or
 //! condition, defined anywhere in the program (order doesn't matter).
 
-use crate::compile::{FilterDef, Hours, Kind, Program, Side};
-use crate::expr::{if_, CmpOp, Cond, Num};
+use crate::compile::{BasketDef, FilterDef, Hours, Kind, Program, Side};
+use crate::expr::{if_, Attr, CmpOp, Cond, Num, EXCHANGES, SECURITY_TYPES};
 use crate::measure::{CandleInd, Event, Measure, Venue};
 use crate::state::{Align, Win};
 use std::collections::HashMap;
@@ -82,8 +82,10 @@ pub const CALLS: &[(&str, &str)] = &[
     ("abs", "abs(a)"),
 ];
 
-const ITEM_WORDS: &[&str] = &["field", "condition", "trigger", "list"];
+const ITEM_WORDS: &[&str] = &["field", "condition", "trigger", "list", "basket"];
 const SETTING_WORDS: &[&str] = &["side", "hours", "cooldown", "screen", "show", "rank", "when"];
+/// What a basket can bound, and the field each reads.
+const BASKET_RANGES: &[(&str, &str)] = &[("price", "last"), ("float", "float"), ("adv", "adv"), ("atr", "atr")];
 const LOGIC_WORDS: &[&str] = &["and", "or", "not"];
 
 /// A position in a source file.
@@ -138,14 +140,23 @@ impl fmt::Display for Tok {
 
 struct Lexed {
     toks: Vec<(Tok, Pos)>,
+    /// Each token's extent in the source, as char indices `[start, end)`.
+    spans: Vec<(usize, usize)>,
 }
 
 fn lex(file: &Arc<str>, src: &str) -> Result<Lexed, LangError> {
     let chars: Vec<char> = src.chars().collect();
     let (mut i, mut line, mut col) = (0usize, 1usize, 1usize);
     let mut toks = vec![];
+    // Each loop turn pushes at most one token; its extent closes at the next turn's start.
+    let mut spans = vec![];
+    let mut turn_start = 0usize;
     let err = |pos: Pos, msg: String| LangError { file: file.clone(), pos, msg };
     while i < chars.len() {
+        if toks.len() > spans.len() {
+            spans.push((turn_start, i));
+        }
+        turn_start = i;
         let c = chars[i];
         let pos = Pos { line, col };
         let adv = |i: &mut usize, col: &mut usize, n: usize| {
@@ -248,8 +259,12 @@ fn lex(file: &Arc<str>, src: &str) -> Result<Lexed, LangError> {
             toks.push((Tok::Sym(sym), pos));
         }
     }
+    if toks.len() > spans.len() {
+        spans.push((turn_start, i));
+    }
     toks.push((Tok::Eof, Pos { line, col }));
-    Ok(Lexed { toks })
+    spans.push((i, i));
+    Ok(Lexed { toks, spans })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -280,6 +295,15 @@ enum Item {
     Field { name: String, pos: Pos, body: Node },
     Condition { name: String, pos: Pos, body: Node },
     Filter(FilterItem),
+    Basket(BasketItem),
+}
+
+struct BasketItem {
+    name: String,
+    pos: Pos,
+    types: Vec<(String, Pos)>,
+    exchanges: Vec<(String, Pos)>,
+    ranges: Vec<(String, Option<f64>, Option<f64>, Pos)>,
 }
 
 struct FilterItem {
@@ -292,6 +316,7 @@ struct FilterItem {
     screen: Option<String>,
     show: Vec<(String, Pos)>,
     rank: Option<Node>,
+    basket: Option<(String, Pos)>,
     when: Node,
 }
 
@@ -348,7 +373,7 @@ impl<'a> Parser<'a> {
     fn items(&mut self) -> Result<Vec<Item>, LangError> {
         let mut out = vec![];
         while *self.peek() != Tok::Eof {
-            let (w, p) = self.ident("`field`, `condition`, `trigger` or `list`")?;
+            let (w, p) = self.ident("`field`, `condition`, `trigger`, `list` or `basket`")?;
             match w.as_str() {
                 "field" | "condition" => {
                     let (name, pos) = self.ident("a name")?;
@@ -360,10 +385,82 @@ impl<'a> Parser<'a> {
                     let kind = if w == "trigger" { Kind::Trigger } else { Kind::List };
                     out.push(Item::Filter(self.filter(kind)?));
                 }
-                _ => return self.err(p, format!("expected `field`, `condition`, `trigger` or `list`, found `{w}`")),
+                "basket" => out.push(Item::Basket(self.basket()?)),
+                _ => return self.err(p, format!("expected `field`, `condition`, `trigger`, `list` or `basket`, found `{w}`")),
             }
         }
         Ok(out)
+    }
+
+    /// `basket NAME { types …  exchanges …  price A to B  float to B  adv A to  atr A to B }`
+    fn basket(&mut self) -> Result<BasketItem, LangError> {
+        let (name, pos) = self.ident("a basket name")?;
+        self.expect_sym("{")?;
+        let mut b = BasketItem { name, pos, types: vec![], exchanges: vec![], ranges: vec![] };
+        let mut seen: Vec<String> = vec![];
+        loop {
+            if *self.peek() == Tok::Sym("}") {
+                self.next();
+                if b.types.is_empty() && b.exchanges.is_empty() && b.ranges.is_empty() {
+                    return self.err(pos, "a basket needs at least one rule (types, exchanges, price, float, adv, atr)");
+                }
+                return Ok(b);
+            }
+            let (w, p) = self.ident("a basket rule (types, exchanges, price, float, adv, atr) or `}`")?;
+            if seen.contains(&w) {
+                return self.err(p, format!("`{w}` is set twice"));
+            }
+            seen.push(w.clone());
+            match w.as_str() {
+                "types" | "exchanges" => {
+                    let (allowed, what) = if w == "types" { (SECURITY_TYPES, "a security type") } else { (EXCHANGES, "an exchange") };
+                    let mut list = vec![];
+                    loop {
+                        let (v, vp) = self.ident(what)?;
+                        if !allowed.contains(&v.as_str()) {
+                            return self.err(vp, format!("`{v}` is not {what} (one of {})", allowed.join(", ")));
+                        }
+                        list.push((v, vp));
+                        if *self.peek() == Tok::Sym(",") {
+                            self.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    if w == "types" {
+                        b.types = list;
+                    } else {
+                        b.exchanges = list;
+                    }
+                }
+                k if BASKET_RANGES.iter().any(|r| r.0 == k) => {
+                    let num = |this: &mut Self| -> Option<f64> {
+                        if let Tok::Num(x) = *this.peek() {
+                            this.next();
+                            Some(x)
+                        } else {
+                            None
+                        }
+                    };
+                    let lo = num(self);
+                    match self.next() {
+                        (Tok::Ident(t), _) if t == "to" => {}
+                        (t, tp) => return self.err(tp, format!("`{k}` reads `{k} MIN to MAX` (either may be left out), found {t}")),
+                    }
+                    let hi = num(self);
+                    if lo.is_none() && hi.is_none() {
+                        return self.err(p, format!("`{k}` needs a minimum, a maximum or both"));
+                    }
+                    if let (Some(a), Some(z)) = (lo, hi) {
+                        if a > z {
+                            return self.err(p, format!("`{k}` minimum {a} is above its maximum {z}"));
+                        }
+                    }
+                    b.ranges.push((k.to_string(), lo, hi, p));
+                }
+                _ => return self.err(p, format!("unknown basket rule `{w}` (types, exchanges, price, float, adv, atr)")),
+            }
+        }
     }
 
     fn filter(&mut self, kind: Kind) -> Result<FilterItem, LangError> {
@@ -379,11 +476,12 @@ impl<'a> Parser<'a> {
             screen: None,
             show: vec![],
             rank: None,
+            basket: None,
             when: Node { e: E::Num(0.0), pos },
         };
         let mut seen: Vec<String> = vec![];
         loop {
-            let (w, p) = self.ident("a setting (side, hours, cooldown, screen, show, rank) or `when`")?;
+            let (w, p) = self.ident("a setting (side, hours, cooldown, screen, show, rank, basket) or `when`")?;
             if seen.contains(&w) {
                 return self.err(p, format!("`{w}` is set twice"));
             }
@@ -424,6 +522,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 "rank" => f.rank = Some(self.expr()?),
+                "basket" => f.basket = Some(self.ident("a basket name")?),
                 "when" => {
                     f.when = self.expr()?;
                     if let Tok::Ident(w) = self.peek() {
@@ -434,7 +533,7 @@ impl<'a> Parser<'a> {
                     self.expect_sym("}")?;
                     return Ok(f);
                 }
-                _ => return self.err(p, format!("unknown setting `{w}` (side, hours, cooldown, screen, show, rank, when)")),
+                _ => return self.err(p, format!("unknown setting `{w}` (side, hours, cooldown, screen, show, rank, basket, when)")),
             }
         }
     }
@@ -570,6 +669,7 @@ enum NameKind {
     Field,
     Condition,
     Filter,
+    Basket,
 }
 
 struct Typer<'a> {
@@ -577,7 +677,45 @@ struct Typer<'a> {
     file: Arc<str>,
 }
 
+fn kind_word(k: NameKind) -> &'static str {
+    match k {
+        NameKind::Field => "field",
+        NameKind::Condition => "condition",
+        NameKind::Filter => "filter",
+        NameKind::Basket => "basket",
+    }
+}
+
 impl Typer<'_> {
+    /// A basket's rules as conditions, and its structured form.
+    fn basket(&self, b: &BasketItem) -> Result<(BasketDef, Vec<Cond>), LangError> {
+        let mut rules = vec![];
+        let set = |v: &[(String, Pos)]| -> std::sync::Arc<[Arc<str>]> { v.iter().map(|(s, _)| Arc::from(s.as_str())).collect() };
+        if !b.types.is_empty() {
+            rules.push(Cond::Is(Attr::Type, set(&b.types)));
+        }
+        if !b.exchanges.is_empty() {
+            rules.push(Cond::Is(Attr::Exchange, set(&b.exchanges)));
+        }
+        for (key, lo, hi, p) in &b.ranges {
+            let field = BASKET_RANGES.iter().find(|r| r.0 == key).expect("parser checked").1;
+            let m = self.num(&Node { e: E::Name(field.to_string()), pos: *p })?;
+            for (bound, op) in [(lo, CmpOp::Ge), (hi, CmpOp::Le)] {
+                if let Some(x) = bound {
+                    self.check_float_units(*p, &m, &Num::Const(*x))?;
+                    rules.push(Cond::Cmp(Box::new(m.clone()), op, Box::new(Num::Const(*x))));
+                }
+            }
+        }
+        let def = BasketDef {
+            name: Arc::from(b.name.as_str()),
+            types: b.types.iter().map(|t| t.0.clone()).collect(),
+            exchanges: b.exchanges.iter().map(|t| t.0.clone()).collect(),
+            ranges: b.ranges.iter().map(|(k, lo, hi, _)| (k.clone(), *lo, *hi)).collect(),
+        };
+        Ok((def, rules))
+    }
+
     fn err<T>(&self, pos: Pos, msg: impl Into<String>) -> Result<T, LangError> {
         Err(LangError { file: self.file.clone(), pos, msg: msg.into() })
     }
@@ -616,6 +754,7 @@ impl Typer<'_> {
                     Some((NameKind::Field, name, _)) => Ok(Num::Ref(name.clone())),
                     Some((NameKind::Condition, ..)) => self.err(n.pos, format!("`{s}` is a condition, not a number")),
                     Some((NameKind::Filter, ..)) => self.err(n.pos, format!("`{s}` is a filter; filters can't be referenced")),
+                    Some((NameKind::Basket, ..)) => self.err(n.pos, format!("`{s}` is a basket; a filter uses one with the `basket {s}` setting")),
                     None => self.err(n.pos, format!("`{s}` is not defined (and isn't a builtin)")),
                 }
             }
@@ -928,6 +1067,52 @@ pub fn load_dir(dir: &std::path::Path) -> Result<Program, LangError> {
     parse_sources(&refs)
 }
 
+/// Where one filter sits in a source: its block from `trigger`/`list` to the closing `}`, and the
+/// numbers, durations and times of day inside it (what the app's filter editor makes editable).
+/// Offsets are bytes into `src`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilterSource {
+    pub start: usize,
+    pub end: usize,
+    pub literals: Vec<(usize, usize)>,
+}
+
+/// Find filter `name` in one source. `None` if it isn't there or the source doesn't lex.
+pub fn locate_filter(src: &str, name: &str) -> Option<FilterSource> {
+    locate_item(src, &["trigger", "list"], name)
+}
+
+/// Find basket `name` in one source.
+pub fn locate_basket(src: &str, name: &str) -> Option<FilterSource> {
+    locate_item(src, &["basket"], name)
+}
+
+fn locate_item(src: &str, words: &[&str], name: &str) -> Option<FilterSource> {
+    let Lexed { toks, spans } = lex(&Arc::from("<locate>"), src).ok()?;
+    let byte: Vec<usize> = src.char_indices().map(|(b, _)| b).chain(std::iter::once(src.len())).collect();
+    let k = (0..toks.len().saturating_sub(2)).find(|&k| {
+        matches!(&toks[k].0, Tok::Ident(w) if words.contains(&w.as_str()))
+            && matches!(&toks[k + 1].0, Tok::Ident(n) if n == name)
+            && toks[k + 2].0 == Tok::Sym("{")
+    })?;
+    let mut depth = 0usize;
+    let mut literals = vec![];
+    for j in k + 2..toks.len() {
+        match toks[j].0 {
+            Tok::Sym("{") => depth += 1,
+            Tok::Sym("}") => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(FilterSource { start: byte[spans[k].0], end: byte[spans[j].1], literals });
+                }
+            }
+            Tok::Num(_) | Tok::Dur(_) | Tok::Clock(_) => literals.push((byte[spans[j].0], byte[spans[j].1])),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Parse one source.
 pub fn parse(src: &str) -> Result<Program, LangError> {
     parse_sources(&[("<input>", src)])
@@ -951,6 +1136,7 @@ pub fn parse_sources(sources: &[(&str, &str)]) -> Result<Program, LangError> {
             Item::Field { name, pos, .. } => (name, *pos, NameKind::Field),
             Item::Condition { name, pos, .. } => (name, *pos, NameKind::Condition),
             Item::Filter(f) => (&f.name, f.pos, NameKind::Filter),
+            Item::Basket(b) => (&b.name, b.pos, NameKind::Basket),
         };
         let e = |msg: String| Err(LangError { file: file.clone(), pos, msg });
         if reserved(name) {
@@ -963,13 +1149,43 @@ pub fn parse_sources(sources: &[(&str, &str)]) -> Result<Program, LangError> {
     }
 
     let mut program = Program::default();
+    // Baskets first: a filter may name one defined later, or in another file.
+    let mut baskets: HashMap<String, Vec<Cond>> = HashMap::new();
+    for (file, it) in &items {
+        if let Item::Basket(b) = it {
+            let ty = Typer { names: &names, file: file.clone() };
+            let (def, rules) = ty.basket(b)?;
+            program.baskets.push(def);
+            baskets.insert(b.name.clone(), rules);
+        }
+    }
     for (file, it) in &items {
         let ty = Typer { names: &names, file: file.clone() };
         match it {
+            Item::Basket(_) => {}
             Item::Field { name, body, .. } => program = program.define_num(name, ty.num(body)?),
             Item::Condition { name, body, .. } => program = program.define_cond(name, ty.cond(body)?),
             Item::Filter(f) => {
-                let mut def = FilterDef::new(&f.name, ty.cond(&f.when)?, 0);
+                let when = ty.cond(&f.when)?;
+                // The basket's rules go in front, flat beside the filter's own top-level clauses,
+                // so an explanation lists "type is stock", "price >= 1" with the rest.
+                let (cond, basket) = match &f.basket {
+                    None => (when, None),
+                    Some((b, bp)) => match (names.get(b), baskets.get(b)) {
+                        (_, Some(rules)) => {
+                            let mut all = rules.clone();
+                            match when {
+                                Cond::All(cs) => all.extend(cs),
+                                c => all.push(c),
+                            }
+                            (Cond::All(all), Some(Arc::from(b.as_str())))
+                        }
+                        (Some((kind, _, _)), None) => return ty.err(*bp, format!("`{b}` is a {}, not a basket", kind_word(*kind))),
+                        (None, None) => return ty.err(*bp, format!("no basket named `{b}`")),
+                    },
+                };
+                let mut def = FilterDef::new(&f.name, cond, 0);
+                def.basket = basket;
                 def.kind = f.kind;
                 def.side = f.side;
                 def.hours = f.hours;
@@ -1015,6 +1231,90 @@ mod tests {
             Ok(_) => panic!("parsed: {src}"),
             Err(e) => e.to_string(),
         }
+    }
+
+    #[test]
+    fn a_basket_goes_in_front_of_the_filters_that_use_it() {
+        // The filter comes first and names a basket defined after it, in another source.
+        let p = parse_sources(&[
+            ("a.scan", "trigger t {\n basket Small\n when last >= 1 and last <= 100 }"),
+            ("b.scan", "basket Small {\n types stock, adr\n exchanges nasdaq\n price 1 to 50\n float to 20_000_000\n adv 100_000 to\n}"),
+        ])
+        .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(p.baskets.len(), 1);
+        let b = &p.baskets[0];
+        assert_eq!((&*b.name, b.types.clone(), b.exchanges.clone()), ("Small", vec!["stock".to_string(), "adr".to_string()], vec!["nasdaq".to_string()]));
+        assert_eq!(b.ranges, vec![("price".into(), Some(1.0), Some(50.0)), ("float".into(), None, Some(20e6)), ("adv".into(), Some(100_000.0), None)]);
+        let f = &p.filters[0];
+        assert_eq!(f.basket.as_deref(), Some("Small"));
+        // Flat: the basket's six rules, then the filter's own two clauses.
+        let Cond::All(parts) = &f.cond else { panic!("{}", f.cond) };
+        let text: Vec<String> = parts.iter().map(|c| c.to_string()).collect();
+        assert_eq!(text, vec!["type is stock, adr", "exchange is nasdaq", "last >= 1", "last <= 50", "float <= 20000000", "adv >= 100000", "last >= 1", "last <= 100"]);
+    }
+
+    #[test]
+    fn type_and_exchange_read_the_reference_data() {
+        let src = "basket B { types etf exchanges arca }\ntrigger t { basket B\n when last > 0 }";
+        let p = parse(src).unwrap();
+        let c = Compiled::new(&p).unwrap();
+        let mut s = minutes(10);
+        let run = |s: &crate::state::SymbolState| {
+            let mut ctx = Ctx::new(&c, s);
+            c.eval(0, &mut ctx)
+        };
+        assert_eq!(run(&s), Tri::Unknown, "no reference data: unknown, never assumed");
+        s.set_reference(crate::state::Reference { security_type: Some(Arc::from("etf")), exchange: Some(Arc::from("arca")), ..Default::default() });
+        assert_eq!(run(&s), Tri::True);
+        s.set_reference(crate::state::Reference { security_type: Some(Arc::from("stock")), exchange: Some(Arc::from("arca")), ..Default::default() });
+        assert_eq!(run(&s), Tri::False);
+    }
+
+    #[test]
+    fn basket_mistakes_are_refused() {
+        let cases = [
+            ("basket B { types stocks }", "not a security type"),
+            ("basket B { exchanges nasdq }", "not an exchange"),
+            ("basket B { }", "at least one rule"),
+            ("basket B { price to }", "a minimum, a maximum or both"),
+            ("basket B { price 50 to 5 }", "above its maximum"),
+            ("basket B { price 5 }", "MIN to MAX"),
+            ("basket B { float to 20 }", "in shares"),
+            ("basket B { price 1 to price 2 to }", "set twice"),
+            ("basket B { volume 1 to }", "unknown basket rule"),
+            ("trigger t { basket Nope\n when last > 1 }", "no basket named `Nope`"),
+            ("field F = 1\ntrigger t { basket F\n when last > 1 }", "is a field, not a basket"),
+            ("basket B { price 1 to }\ntrigger t { when B > 1 }", "is a basket"),
+        ];
+        for (src, want) in cases {
+            let e = error(src);
+            assert!(e.contains(want), "{src}: {e}");
+        }
+    }
+
+    #[test]
+    fn a_filter_and_its_numbers_are_located() {
+        let src = "# café ☕ (multi-byte, so bytes != chars)\nfield f = 1\n\ntrigger A {\n    cooldown 5m\n    when last >= 1_000 and time <= 9:30 and (f) > .5\n}\nlist B { when last > 2 }\n";
+        let a = locate_filter(src, "A").unwrap();
+        assert!(src[a.start..a.end].starts_with("trigger A {") && src[a.start..a.end].ends_with('}'));
+        let lits: Vec<&str> = a.literals.iter().map(|&(s, e)| &src[s..e]).collect();
+        assert_eq!(lits, vec!["5m", "1_000", "9:30", ".5"]);
+        let b = locate_filter(src, "B").unwrap();
+        assert_eq!(&src[b.start..b.end], "list B { when last > 2 }");
+        assert_eq!(b.literals.iter().map(|&(s, e)| &src[s..e]).collect::<Vec<_>>(), vec!["2"]);
+        assert_eq!(locate_filter(src, "f"), None, "a field is not a filter");
+        assert_eq!(locate_filter(src, "C"), None);
+        let with_basket = "basket Small { price 1 to 50 }
+trigger Small2 { basket Small
+ when last > 1 }
+";
+        let k = locate_basket(with_basket, "Small").unwrap();
+        assert_eq!(&with_basket[k.start..k.end], "basket Small { price 1 to 50 }");
+        assert_eq!(locate_filter(with_basket, "Small"), None, "a basket is not a filter");
+        // One filter on its own keeps the shared definitions it needs.
+        let one = parse(src).unwrap().only("A").unwrap();
+        assert_eq!(one.filters.len(), 1);
+        assert!(Compiled::new(&one).is_ok());
     }
 
     #[test]

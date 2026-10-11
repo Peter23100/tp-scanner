@@ -176,6 +176,13 @@ impl Engine {
         })
     }
 
+    /// Treat the feed as having started at `t` (before any bar arrives). A run over one symbol's
+    /// bars sets the session's real feed start, so the time before that symbol's first print
+    /// reads quiet exactly as it does in the full-market run, not unknown.
+    pub fn set_feed_start(&mut self, t: Ts) {
+        self.feed_start = Some(t);
+    }
+
     pub fn compiled(&self) -> &Compiled {
         &self.compiled
     }

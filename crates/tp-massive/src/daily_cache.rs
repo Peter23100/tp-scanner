@@ -202,6 +202,10 @@ impl RawDaily {
         self.bars.len()
     }
 
+    pub fn symbol_names(&self) -> impl Iterator<Item = &str> {
+        self.bars.keys().map(String::as_str)
+    }
+
     pub fn insert_for_test(&mut self, symbol: &str, bars: Vec<Bar<Unadjusted>>, splits: Vec<(NaiveDate, AdjFactor)>) {
         self.bars.insert(symbol.to_string(), bars);
         self.splits.insert(symbol.to_string(), splits);

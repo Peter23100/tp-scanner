@@ -340,6 +340,29 @@ impl DailyRef {
 pub struct Reference {
     /// Float in **shares** (Primus `FloatShares` is in millions; the translation multiplies).
     pub float_shares: Option<f64>,
+    /// One of [`crate::expr::SECURITY_TYPES`] ("stock", "etf", …).
+    pub security_type: Option<Arc<str>>,
+    /// One of [`crate::expr::EXCHANGES`] ("nasdaq", "nyse", …).
+    pub exchange: Option<Arc<str>>,
+}
+
+impl Reference {
+    /// One reference per symbol from the float list and the ticker list (`symbol, type,
+    /// exchange`), either of which may lack a symbol the other has.
+    pub fn merge(floats: &[(String, f64)], tickers: &[(String, Option<String>, Option<String>)]) -> Vec<(String, Reference)> {
+        let mut by: std::collections::HashMap<&str, Reference> = std::collections::HashMap::new();
+        for (s, f) in floats {
+            by.entry(s).or_default().float_shares = Some(*f);
+        }
+        for (s, t, x) in tickers {
+            let r = by.entry(s).or_default();
+            r.security_type = t.as_deref().map(Arc::from);
+            r.exchange = x.as_deref().map(Arc::from);
+        }
+        let mut out: Vec<(String, Reference)> = by.into_iter().map(|(s, r)| (s.to_string(), r)).collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
 }
 
 /// Auction and imbalance data for one session, set from outside (no feed is wired yet).

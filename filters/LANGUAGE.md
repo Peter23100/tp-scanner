@@ -11,13 +11,14 @@ Now"). See [Asking Claude for a change](#asking-claude-for-a-change) at the end.
 
 ---
 
-## 1. The four things a file can contain
+## 1. The five things a file can contain
 
 ```
 field     NAME = <number expression>          # a named number, usable anywhere, shows as a column
 condition NAME = <true/false expression>      # a named yes/no test, usable inside any filter
 trigger   NAME { settings...  when <test> }   # an ALERT: fires a signal (Primus filter, TI alert window)
 list      NAME { settings...  when <test> }   # a STANDING LIST: who qualifies right now (Primus static, TI top list)
+basket    NAME { rules... }                   # WHICH STOCKS a filter may draw from (§2.1)
 ```
 
 - Every `.scan` file in `filters/` is loaded together, so a field defined in `fields.scan` can be
@@ -56,6 +57,7 @@ comes last.
 | `cooldown` | a duration: `30s`, `1m`, `5m`, `1h` | none (fires every evaluation) | min time between two signals for the same symbol. Primus `MaxTriggersCount(MINUTES, 5, 1)` = `cooldown 5m` |
 | `show` | `FIELD1, FIELD2, ...` | none | columns shown next to the symbol (must be fields) |
 | `rank` | a number expression | none | lists only: sort order, highest first |
+| `basket` | a basket's name (§2.1) | none (every stock) | only stocks in that basket can fire |
 | `when` | a true/false expression | (required) | the test itself |
 
 | `hours` | evaluated |
@@ -64,6 +66,42 @@ comes last.
 | `pre` | 04:00–09:30 |
 | `extended` | 04:00–20:00 (pre + regular + after-hours) |
 | `any` | always |
+
+### 2.1 Baskets: which stocks a filter may draw from
+
+A basket is a named set of qualifications, defined once and used by any number of filters, so
+"low floats on the main exchanges, $1–50" is written (and changed) in one place. The app edits them
+with checkboxes and min/max boxes (launcher → **Baskets**), and shows how many symbols pass before
+you save; they live in `filters/baskets.scan`.
+
+```
+basket Example_LowFloat {
+    types stock, adr
+    exchanges nasdaq, nyse, amex
+    price 1 to 50
+    float to 10_000_000
+    adv 100_000 to
+}
+```
+
+| rule | values | reads |
+|---|---|---|
+| `types` | `stock`, `adr`, `etf`, `etn`, `preferred`, `warrant`, `right`, `unit`, `fund`, `other` | the ticker's security type (Massive reference data) |
+| `exchanges` | `nasdaq`, `nyse`, `amex` (NYSE American), `arca` (NYSE Arca), `cboe`, `iex`, `otc`, `other` | its primary listing exchange |
+| `price A to B` | dollars | `last` |
+| `float A to B` | **shares** (as `float`, §5) | free float |
+| `adv A to B` | shares per day | 20-day average daily volume |
+| `atr A to B` | dollars | 14-day average true range |
+
+- Leave either end off a range: `price 5 to` is "at least $5", `float to 20_000_000` "at most 20M".
+  A rule left out restricts nothing; a basket needs at least one rule.
+- A filter uses one with `basket NAME`. The basket's rules go **in front** of the filter's own
+  `when`, each as its own clause, so "Why isn't X firing?" shows exactly which one blocked it
+  (`type is stock, adr`, `last <= 50`, ...).
+- **Missing data never passes.** A symbol with no float, or not in the ticker list, is *unknown* on
+  those rules and can't fire, the same as any unknown value (§3).
+- The ticker list (type and exchange) comes with `tp-scan sync` (`tickers.csv`); the app fetches
+  it on first start if a sync hasn't.
 
 ## 3. Expressions
 

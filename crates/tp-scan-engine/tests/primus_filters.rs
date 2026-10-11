@@ -235,7 +235,7 @@ fn low_float_runner(sym: &str, float_shares: f64) -> (Engine, VecSink) {
         ..DailyRef::bare(SessionDate(day()), Price::new(2.0))
     };
     e.set_daily(sym, d);
-    e.set_reference(sym, Reference { float_shares: Some(float_shares) });
+    e.set_reference(sym, Reference { float_shares: Some(float_shares), ..Default::default() });
     let mut sink = VecSink::default();
     // One 07:00 premarket print (so the feed covers the 120-minute window), then 09:30–09:59
     // drifts 2.00 -> 2.87 on 30k a minute, and 10:00–10:09 runs 2.90 -> 3.80 on 60k then 100k.

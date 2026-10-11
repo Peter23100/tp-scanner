@@ -78,6 +78,18 @@ fn the_docs_fields_and_conditions_are_the_ones_common_scan_defines() {
 }
 
 #[test]
+fn every_basket_example_compiles_with_a_filter_using_it() {
+    let doc = read("filters/LANGUAGE.md");
+    let baskets: Vec<String> = fenced(&doc).into_iter().filter(|b| b.starts_with("basket")).collect();
+    assert!(!baskets.is_empty());
+    for b in &baskets {
+        let name = b.split_whitespace().nth(1).expect("a name");
+        let src = format!("{b}\ntrigger Doc_Uses_{name} {{\n    basket {name}\n    when last > 0\n}}\n");
+        compiles(&[("doc §2.1", &src)]);
+    }
+}
+
+#[test]
 fn every_pattern_in_the_table_compiles() {
     let book = cookbook();
     let table = &book[book.find("### 6.6").expect("§6.6")..];

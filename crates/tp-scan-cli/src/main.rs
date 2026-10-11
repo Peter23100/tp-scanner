@@ -260,7 +260,7 @@ fn replay(o: &ReplayOpts) -> Result<(), String> {
         let floats = files::read_float(p)?;
         eprintln!("float: {} symbols", floats.len());
         for (sym, shares) in floats {
-            engine.set_reference(&sym, tp_scan_engine::state::Reference { float_shares: Some(shares) });
+            engine.set_reference(&sym, tp_scan_engine::state::Reference { float_shares: Some(shares), ..Default::default() });
         }
     }
 
@@ -337,14 +337,22 @@ fn load_cache(engine: &mut Engine) -> Result<(), String> {
         raw.adjusted_history(sym, session, tp_scan_engine::daily::HISTORY_DAYS)
     }));
     let fp = data.join("float.csv");
-    if fp.exists() {
-        let floats = files::read_float(&fp)?;
-        eprintln!("float: {} symbols", floats.len());
-        for (sym, shares) in floats {
-            engine.set_reference(&sym, tp_scan_engine::state::Reference { float_shares: Some(shares) });
-        }
+    let floats = if fp.exists() {
+        let f = files::read_float(&fp)?;
+        eprintln!("float: {} symbols", f.len());
+        f
     } else {
         eprintln!("⚠ no float cache: float filters can't fire (run `tp-scan sync`)");
+        vec![]
+    };
+    let tickers = tp_massive::tickers::load(&data);
+    if tickers.is_empty() {
+        eprintln!("⚠ no ticker reference: basket types and exchanges read unknown (run `tp-scan sync`)");
+    } else {
+        eprintln!("tickers: {} symbols", tickers.len());
+    }
+    for (sym, r) in tp_scan_engine::state::Reference::merge(&floats, &tickers) {
+        engine.set_reference(&sym, r);
     }
     Ok(())
 }
@@ -384,6 +392,10 @@ fn sync(args: &[String]) -> Result<(), String> {
             println!("float: {} symbols", f.len());
         }
         Err(e) => println!("⚠ float not fetched ({e}): float filters can't fire"),
+    }
+    match tp_massive::tickers::refresh(&rest, &data) {
+        Ok(n) => println!("tickers: {n} symbols (type and exchange, for baskets)"),
+        Err(e) => println!("⚠ tickers not fetched ({e}): basket types and exchanges read unknown"),
     }
     match rest.upcoming_holidays() {
         Ok(h) => {

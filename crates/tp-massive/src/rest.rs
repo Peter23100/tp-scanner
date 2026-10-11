@@ -45,7 +45,7 @@ pub struct Holiday {
 pub struct Rest {
     http: reqwest::blocking::Client,
     key: Secret,
-    base: String,
+    pub(crate) base: String,
 }
 
 impl Rest {
@@ -78,7 +78,7 @@ impl Rest {
     }
 
     /// Follow `next_url` pages, collecting every `results` entry.
-    fn get_all(&self, first: &str) -> Result<Vec<Value>, MassiveError> {
+    pub(crate) fn get_all(&self, first: &str) -> Result<Vec<Value>, MassiveError> {
         let mut out = vec![];
         let mut url = Some(first.to_string());
         while let Some(u) = url.take() {
@@ -124,18 +124,33 @@ impl Rest {
     }
 
     /// One ticker's 1-minute bars from `from` through `to` (inclusive dates, New York), unadjusted,
-    /// oldest first. Includes extended hours.
+    /// oldest first, every page. Includes extended hours.
     pub fn minute_bars(&self, ticker: &str, from: NaiveDate, to: NaiveDate) -> Result<Vec<Bar<Unadjusted>>, MassiveError> {
-        if ticker.is_empty() || !ticker.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
-            return Err(MassiveError::Parse(format!("`{ticker}` is not a ticker")));
-        }
-        let url = format!(
-            "{}/v2/aggs/ticker/{ticker}/range/1/minute/{from}/{to}?adjusted=false&sort=asc&limit=50000",
-            self.base
-        );
-        let v = self.get(&url)?;
-        Ok(parse_aggs(&v))
+        let url = aggs_url(&self.base, ticker, "minute", from, to, false)?;
+        Ok(self.get_all(&url)?.iter().filter_map(parse_agg_row).collect())
     }
+
+    /// Bars for a chart: `timespan` is "minute", "day", "week" or "month"; split-adjusted when
+    /// `adjusted` (display only, so plain numbers rather than a typed bar). `[t_ms, o, h, l, c, v]`,
+    /// oldest first, every page.
+    pub fn chart_bars(&self, ticker: &str, timespan: &str, from: NaiveDate, to: NaiveDate, adjusted: bool) -> Result<Vec<[f64; 6]>, MassiveError> {
+        let url = aggs_url(&self.base, ticker, timespan, from, to, adjusted)?;
+        Ok(self
+            .get_all(&url)?
+            .iter()
+            .filter_map(|r| Some([r.get("t")?.as_i64()? as f64, num(r, "o")?, num(r, "h")?, num(r, "l")?, num(r, "c")?, num(r, "v")?]))
+            .collect())
+    }
+}
+
+fn aggs_url(base: &str, ticker: &str, timespan: &str, from: NaiveDate, to: NaiveDate, adjusted: bool) -> Result<String, MassiveError> {
+    if ticker.is_empty() || !ticker.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
+        return Err(MassiveError::Parse(format!("`{ticker}` is not a ticker")));
+    }
+    if !matches!(timespan, "minute" | "day" | "week" | "month") {
+        return Err(MassiveError::Parse(format!("`{timespan}` is not a bar timespan")));
+    }
+    Ok(format!("{base}/v2/aggs/ticker/{ticker}/range/1/{timespan}/{from}/{to}?adjusted={adjusted}&sort=asc&limit=50000"))
 }
 
 fn strip_query(url: &str) -> String {
@@ -204,15 +219,16 @@ pub(crate) fn parse_holidays(v: &Value) -> Vec<Holiday> {
     out
 }
 
+#[cfg(test)]
 pub(crate) fn parse_aggs(v: &Value) -> Vec<Bar<Unadjusted>> {
     let Some(rs) = v.get("results").and_then(Value::as_array) else { return vec![] };
-    rs.iter()
-        .filter_map(|r| {
-            let start = Ts::from_millis(r.get("t")?.as_i64()?)?;
-            let (o, h, l, c, vol) = (num(r, "o")?, num(r, "h")?, num(r, "l")?, num(r, "c")?, num(r, "v")?);
-            Some(Bar { start, open: Price::new(o), high: Price::new(h), low: Price::new(l), close: Price::new(c), volume: vol })
-        })
-        .collect()
+    rs.iter().filter_map(parse_agg_row).collect()
+}
+
+pub(crate) fn parse_agg_row(r: &Value) -> Option<Bar<Unadjusted>> {
+    let start = Ts::from_millis(r.get("t")?.as_i64()?)?;
+    let (o, h, l, c, vol) = (num(r, "o")?, num(r, "h")?, num(r, "l")?, num(r, "c")?, num(r, "v")?);
+    Some(Bar { start, open: Price::new(o), high: Price::new(h), low: Price::new(l), close: Price::new(c), volume: vol })
 }
 
 #[cfg(test)]
@@ -268,6 +284,51 @@ mod tests {
         let b = parse_aggs(&v);
         assert_eq!(b.len(), 1);
         assert_eq!(b[0].start.millis(), 1_760_000_000_000);
+    }
+
+    /// A two-page aggregate answer from a local server: every page is read, the key travels only
+    /// in the Authorization header, and a bad timespan never reaches the network.
+    #[test]
+    fn chart_bars_follow_every_page() {
+        use std::io::{BufRead, BufReader, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let mut seen = vec![];
+            for page in 0..2 {
+                let (mut sock, _) = l.accept().unwrap();
+                let mut rd = BufReader::new(sock.try_clone().unwrap());
+                let mut head = vec![];
+                loop {
+                    let mut line = String::new();
+                    rd.read_line(&mut line).unwrap();
+                    if line.trim_end().is_empty() {
+                        break;
+                    }
+                    head.push(line);
+                }
+                seen.push(head.join(""));
+                let body = if page == 0 {
+                    format!(r#"{{"results":[{{"t":1000,"o":1,"h":2,"l":0.5,"c":1.5,"v":10}}],"next_url":"http://127.0.0.1:{port}/v2/page2"}}"#)
+                } else {
+                    r#"{"results":[{"t":61000,"o":1.5,"h":3,"l":1,"c":2,"v":20}]}"#.to_string()
+                };
+                let crlf = "\r\n";
+                write!(sock, "HTTP/1.1 200 OK{crlf}Content-Type: application/json{crlf}Content-Length: {}{crlf}Connection: close{crlf}{crlf}{body}", body.len()).unwrap();
+            }
+            seen
+        });
+        let rest = Rest::with_base(Secret::new("k123"), &format!("http://127.0.0.1:{port}")).unwrap();
+        let d = NaiveDate::from_ymd_opt(2026, 10, 9).unwrap();
+        assert!(rest.chart_bars("AAPL", "fortnight", d, d, true).is_err());
+        let bars = rest.chart_bars("AAPL", "minute", d, d, true).unwrap();
+        assert_eq!(bars, vec![[1000.0, 1.0, 2.0, 0.5, 1.5, 10.0], [61000.0, 1.5, 3.0, 1.0, 2.0, 20.0]]);
+        let seen = server.join().unwrap();
+        assert!(seen[0].starts_with("GET /v2/aggs/ticker/AAPL/range/1/minute/2026-10-09/2026-10-09?adjusted=true"), "{}", seen[0]);
+        for req in &seen {
+            assert!(req.to_lowercase().contains("authorization: bearer k123"), "{req}");
+            assert!(!req.lines().next().unwrap().contains("k123"), "the key must not be in the URL");
+        }
     }
 
     #[test]

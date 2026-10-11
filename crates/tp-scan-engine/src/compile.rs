@@ -14,7 +14,7 @@
 //!   so every clause shows a value; expressions are pure, so the result can't change.
 //! - Non-finite arithmetic (x/0, overflow, NaN) is unknown.
 
-use crate::expr::{CmpOp, Cond, Num};
+use crate::expr::{Attr, CmpOp, Cond, Num};
 use crate::measure::Measure;
 use crate::state::SymbolState;
 use std::collections::{HashMap, HashSet};
@@ -121,6 +121,23 @@ pub struct FilterDef {
     pub columns: Vec<(Arc<str>, Num)>,
     /// Lists are sorted by this, highest first (Primus `RNK_UP`). Unknown ranks sort last.
     pub rank: Option<Num>,
+    /// The basket the filter draws from, if any. Its rules are already ANDed into `cond`, in
+    /// front; this is the name, for display.
+    pub basket: Option<Arc<str>>,
+}
+
+/// A named basket of stocks: the reference-data and price-range rules a filter can require with
+/// `basket NAME`. Kept in this structured form for the app's basket editor; the rules themselves
+/// are compiled into each filter that uses the basket.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct BasketDef {
+    pub name: Arc<str>,
+    /// Security types allowed (empty = any).
+    pub types: Vec<String>,
+    /// Listing exchanges allowed (empty = any).
+    pub exchanges: Vec<String>,
+    /// `price`, `float`, `adv` or `atr`, with an optional minimum and maximum.
+    pub ranges: Vec<(String, Option<f64>, Option<f64>)>,
 }
 
 impl FilterDef {
@@ -136,6 +153,7 @@ impl FilterDef {
             screen: None,
             columns: vec![],
             rank: None,
+            basket: None,
         }
     }
 }
@@ -146,9 +164,17 @@ pub struct Program {
     pub num_defs: Vec<(Arc<str>, Num)>,
     pub cond_defs: Vec<(Arc<str>, Cond)>,
     pub filters: Vec<FilterDef>,
+    pub baskets: Vec<BasketDef>,
 }
 
 impl Program {
+    /// The same definitions with only the named filter: one filter run on its own (a symbol
+    /// diagnosis, a before/after test of an edit). `None` when there is no such filter.
+    pub fn only(&self, filter: &str) -> Option<Program> {
+        let f = self.filters.iter().find(|f| &*f.name == filter)?.clone();
+        Some(Program { num_defs: self.num_defs.clone(), cond_defs: self.cond_defs.clone(), filters: vec![f], baskets: self.baskets.clone() })
+    }
+
     pub fn define_num(mut self, name: &str, e: Num) -> Self {
         self.num_defs.push((Arc::from(name), e));
         self
@@ -462,7 +488,7 @@ impl Compiler {
             Cond::All(_) => NodeKind::And,
             Cond::Any(_) => NodeKind::Or,
             Cond::Not(_) => NodeKind::Not,
-            Cond::Event(_) => NodeKind::Event,
+            Cond::Event(_) | Cond::Is(..) => NodeKind::Event,
             Cond::Ref(_) => NodeKind::Ref,
         };
         let id = Self::node(nodes, traced, e, kind);
@@ -537,6 +563,19 @@ impl Compiler {
                 let ev = *ev;
                 Box::new(move |c| {
                     let v = ev.eval(c.state).map_or(Tri::Unknown, Tri::from_bool);
+                    c.rec(id, TraceVal::Bool(v));
+                    v
+                })
+            }
+            Cond::Is(attr, set) => {
+                let (attr, set) = (*attr, set.clone());
+                Box::new(move |c| {
+                    let r = c.state.reference();
+                    let have = match attr {
+                        Attr::Type => r.security_type.as_deref(),
+                        Attr::Exchange => r.exchange.as_deref(),
+                    };
+                    let v = have.map_or(Tri::Unknown, |h| Tri::from_bool(set.iter().any(|s| **s == *h)));
                     c.rec(id, TraceVal::Bool(v));
                     v
                 })

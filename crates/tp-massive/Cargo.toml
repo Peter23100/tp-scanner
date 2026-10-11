@@ -16,3 +16,7 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 rusty-s3 = "0.8"
 url = "2"
+
+[dev-dependencies]
+# Tests check the basket words here match the engine's lists.
+tp-scan-engine = { path = "../tp-scan-engine" }

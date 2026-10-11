@@ -14,6 +14,7 @@
 pub mod daily_cache;
 pub mod flatfiles;
 pub mod rest;
+pub mod tickers;
 pub mod ws;
 
 use std::fmt;

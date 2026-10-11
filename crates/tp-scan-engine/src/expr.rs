@@ -96,6 +96,30 @@ pub enum Cond {
     /// A named shared condition, such as the single `Tradeable()` predicate every filter ANDs
     /// with (investigation §7c): tune it in one place and every filter follows.
     Ref(Arc<str>),
+    /// The symbol's security type or listing exchange is one of these (a basket's `types` /
+    /// `exchanges`). Unknown when the reference data doesn't say.
+    Is(Attr, Arc<[Arc<str>]>),
+}
+
+/// Slow-changing facts a basket can require, from the ticker reference data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Attr {
+    Type,
+    Exchange,
+}
+
+/// Every security type a basket may name (the reference data maps Massive's codes onto these).
+pub const SECURITY_TYPES: &[&str] = &["stock", "etf", "etn", "adr", "preferred", "warrant", "right", "unit", "fund", "other"];
+/// Every exchange a basket may name (`amex` = NYSE American, `cboe` = Cboe BZX).
+pub const EXCHANGES: &[&str] = &["nasdaq", "nyse", "amex", "arca", "cboe", "iex", "otc", "other"];
+
+impl Attr {
+    pub fn word(self) -> &'static str {
+        match self {
+            Attr::Type => "type",
+            Attr::Exchange => "exchange",
+        }
+    }
 }
 
 /// A measurement.
@@ -227,6 +251,7 @@ impl fmt::Display for Cond {
             Cond::Not(c) => write!(f, "NOT ({c})"),
             Cond::Event(e) => write!(f, "{e}"),
             Cond::Ref(r) => write!(f, "{r}"),
+            Cond::Is(a, set) => write!(f, "{} is {}", a.word(), set.iter().map(|s| &**s).collect::<Vec<_>>().join(", ")),
         }
     }
 }
