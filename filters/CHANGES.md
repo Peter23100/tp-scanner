@@ -4,6 +4,20 @@ Every change to a filter's logic or thresholds, newest first: what changed, why 
 observation that prompted it), and what verified it. One filter per entry. When fire counts move,
 this is where to look.
 
+## 2026-10-11: PM_Coil_Up / PM_Coil_Down are premarket only (`statics.scan`, fix queue 7)
+
+**Why:** first real-data replay (Massive, Fri 2026-10-09). As loaded (`hours extended`) they ran to
+20:00 against frozen premarket references: 1,804 fires, only ~180 of them before 09:30. The user
+agreed they flood the panel. **Change:** `hours extended` → `hours pre`. One change, both mirrors.
+
+| | fires | symbols |
+|---|---|---|
+| PM_Coil_Up before → after | 906 → 115 | 28 → 16 |
+| PM_Coil_Down before → after | 898 → 65 | 19 → 7 |
+
+**Verified:** `tp-scan check` loads 61; replay of 2026-10-09 gives the counts above, all before 09:30.
+Whether the remaining fires are good setups is the user's call from the panel.
+
 ## 2026-10-09: 19 recovered filters translated; 3 corrected because the loader refuses the originals
 
 From spec/port/RECOVERED_EXPRESSIONS.md: 16 Contras (`contra.scan`), Breakout_Hold_Up/Down

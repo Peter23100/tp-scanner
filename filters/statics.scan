@@ -55,12 +55,12 @@ list LowFloat_Movers_List {
 }
 
 # §5.4 Best-constructed filter in the collection. A trigger (its Primus panel is a FILTER with a
-# Time column and MaxTriggersCount 5). As loaded: no premarket-only gate (fix queue 7 would be
-# `hours pre`), so after the open it compares against frozen premarket references.
+# Time column and MaxTriggersCount 5). Premarket only (CHANGES.md 2026-10-11, fix queue 7): as
+# loaded it ran to 20:00 against frozen premarket references.
 trigger PM_Coil_Up {
     side long
     screen fourth
-    hours extended
+    hours pre
     cooldown 5m
     show PM_RangePos
     when last >= 5
@@ -77,11 +77,11 @@ trigger PM_Coil_Up {
      and (high(1m, 1) - low(1m, 1)) / (pm_high - pm_low) <= 0.15
 }
 
-# §5.5 Mirror of §5.4.
+# §5.5 Mirror of §5.4 (premarket only, likewise).
 trigger PM_Coil_Down {
     side short
     screen fourth
-    hours extended
+    hours pre
     cooldown 5m
     show PM_RangePos
     when last >= 5
