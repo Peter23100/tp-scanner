@@ -16,7 +16,7 @@ fn tp_scan(args: &[&str]) -> (bool, String, String) {
 fn check_lists_every_filter() {
     let (ok, out, err) = tp_scan(&["check", "filters"]);
     assert!(ok, "{err}");
-    assert!(out.contains("ok: 42 filters (32 triggers, 10 lists)"), "{out}");
+    assert!(out.contains("ok: 61 filters (51 triggers, 10 lists)"), "{out}");
     assert!(out.contains("M_Spike_Hold_Up"));
 }
 

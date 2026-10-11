@@ -1,0 +1,617 @@
+{
+  "$schema_version": "1.0",
+  "generated": "2026-09-25",
+  "source": "Primus_Filters_MASTER_2026-09-05.md",
+  "read_first": "PORT_CONTRACT.md",
+  "_schema": {
+    "family": {
+      "id": "stable identifier",
+      "description": "what this family hunts",
+      "skeleton": "shared clause structure; {PLACEHOLDERS} filled per instance",
+      "rationale": "why the skeleton is shaped this way \u2014 port this understanding, not just the code",
+      "instances": "array of parameterised members",
+      "known_defects": "defects shared by the whole family"
+    },
+    "filter": {
+      "id": "stable identifier",
+      "hunts": "one sentence",
+      "port": "as_is | corrected | skip",
+      "corrections": "ordered list of changes to apply when port=corrected",
+      "original_defects": "what is wrong in the live version, preserved for reference",
+      "expression": "verbatim source, present when the filter is not part of a family",
+      "params": "when part of a family",
+      "notes": "anything else an implementer needs"
+    }
+  },
+  "families": [
+    {
+      "id": "sharp_move",
+      "description": "Large fast moves measured as displacement from a recent window extreme. The reversal family: Pop/Drop are day-agnostic, Spike is day-gated and requires a day extreme.",
+      "port": "as_is",
+      "build_order": 1,
+      "skeleton": {
+        "universe": [
+          "DayVolume(ALL_VENUES, 1, CURRENT, NO) >= {DAYVOL}",
+          "Last(ALL_VENUES, CURRENT, NO) >= 2",
+          "ATRStock(ALL_VENUES, NO, DAILY, 14, CURRENT) >= 0.50",
+          "MinuteVolume(ALL_VENUES, 5, CURRENT, NO) >= 5000"
+        ],
+        "volume": "RVOL20DAYTIMEADJUSTED >= 1.25 OR MinuteVolume(ALL_VENUES, 5, CURRENT, NO) * 24 >= MinuteVolume(ALL_VENUES, 120, CURRENT, NO) * {BURST}",
+        "displacement_up": "Last - MinuteLow(ALL_VENUES, N, CURRENT, NO, False)",
+        "displacement_down": "MinuteHigh(ALL_VENUES, N, CURRENT, NO, False) - Last",
+        "tier": [
+          "displacement >= Last * {PCT}",
+          "displacement >= 0.50",
+          "displacement / ATRStock >= IF( ATRStock / ClosePrice(PRIMARY, P1, NO) >= 0.03, {ATR_HIGH}, {ATR_LOW} )"
+        ],
+        "concentration_clause_on_15min_tier": "displacement(5) >= displacement(15) * 0.50",
+        "trigger": "NewMinuteHigh(15, NO) | NewMinuteLow(15, NO)",
+        "throttle": "MaxTriggersCount(MINUTES, 1, 1)"
+      },
+      "rationale": {
+        "two_band_atr": "A single ATR multiple expressed as a percentage is multiple x (ATR/price), so one threshold demands 0.7% from a calm stock and 3.0% from a volatile one \u2014 simultaneously too loose and too tight. Splitting at 3% ATR-of-price and giving each side its own multiple fixes both ends.",
+        "band_denominator": "ClosePrice(P1), NOT Last \u2014 so a gapper is not pushed into the wrong band by its own gap.",
+        "three_floors": "Percent AND dollar AND ATR, ANDed. Whichever is largest binds. Robust from $3 to $900.",
+        "volume_or": "RVOL is cumulative and therefore blocks late-session moves (five documented misses). The burst leg is time-local and immune.",
+        "concentration": "Displacement says how FAR, never how QUICKLY. Without this clause a 15-minute grind produces the same number as a 15-minute crash. Added after TSEM fired on a smooth ramp.",
+        "if_rewrite": "The live filters spell out both bands as OR-of-AND because IF() was not known to exist. IF() works (see custom_fields.PM_RVOL). Porting with a conditional roughly halves each expression."
+      },
+      "known_defects": [
+        "Clock-aligned windows split a move that straddles a boundary into two smaller measurements \u2014 roughly one spike in five. Use rolling windows in the port.",
+        "The burst leg uses the FORMING 5-minute bar while the trigger fires at the instant of a new extreme, so the two race. Early in a bar the accumulated volume may not yet clear the ratio."
+      ],
+      "instances": [
+        {
+          "id": "M_Spike_Up",
+          "params": {
+            "DAYVOL": 150000,
+            "BURST": 2.0,
+            "tiers": [
+              5
+            ],
+            "PCT_5": 0.02,
+            "ATR_HIGH_5": 0.5,
+            "ATR_LOW_5": 0.8
+          },
+          "extra": [
+            "Last >= ClosePrice(PRIMARY, P1, NO)",
+            "Last >= DayHigh(ALL_VENUES, 1, CURRENT, NO) - 0.15 * ATRStock(...)"
+          ],
+          "notes": "Day-gated and day-extreme gated, so structurally morning-weighted \u2014 day highs are mostly set early. This is correct behaviour, not a defect; Pop/Drop carry afternoon coverage."
+        },
+        {
+          "id": "M_Spike_Down",
+          "params": {
+            "DAYVOL": 150000,
+            "BURST": 2.0,
+            "tiers": [
+              5
+            ],
+            "PCT_5": 0.02,
+            "ATR_HIGH_5": 0.5,
+            "ATR_LOW_5": 0.8
+          },
+          "mirror_of": "M_Spike_Up"
+        },
+        {
+          "id": "M_Pop_Sensitive_Up",
+          "params": {
+            "DAYVOL": 250000,
+            "BURST": 3.0,
+            "tiers": [
+              5,
+              15
+            ],
+            "PCT_5": 0.025,
+            "ATR_HIGH_5": 0.5,
+            "ATR_LOW_5": 0.8,
+            "PCT_15": 0.04,
+            "ATR_HIGH_15": 0.9,
+            "ATR_LOW_15": 1.4
+          },
+          "notes": "No day gate \u2014 deliberate. Catches sweeps against the day, which is the reversal setup. Has NO time-of-day bias: if it is quiet in the afternoon the market is not producing moves this size."
+        },
+        {
+          "id": "M_Drop_Sensitive_Down",
+          "params": {
+            "DAYVOL": 250000,
+            "BURST": 3.0,
+            "tiers": [
+              5,
+              15
+            ],
+            "PCT_5": 0.025,
+            "ATR_HIGH_5": 0.5,
+            "ATR_LOW_5": 0.8,
+            "PCT_15": 0.04,
+            "ATR_HIGH_15": 0.9,
+            "ATR_LOW_15": 1.4
+          },
+          "mirror_of": "M_Pop_Sensitive_Up"
+        },
+        {
+          "id": "M_Pop_Medium_EXT_Up",
+          "params": {
+            "DAYVOL": 250000,
+            "BURST": 3.0,
+            "tiers": [
+              5,
+              15
+            ],
+            "PCT_5": 0.05,
+            "ATR_HIGH_5": 0.9,
+            "ATR_LOW_5": 1.6,
+            "PCT_15": 0.08,
+            "ATR_HIGH_15": 1.4,
+            "ATR_LOW_15": 2.4
+          },
+          "notes": "Strict subset of Sensitive \u2014 every threshold roughly doubled, nothing else differs. Treat as a strength flag on the Sensitive list, not a second list."
+        },
+        {
+          "id": "M_Drop_Medium_EXT_Down",
+          "params": {
+            "DAYVOL": 250000,
+            "BURST": 3.0,
+            "tiers": [
+              5,
+              15
+            ],
+            "PCT_5": 0.05,
+            "ATR_HIGH_5": 0.9,
+            "ATR_LOW_5": 1.6,
+            "PCT_15": 0.08,
+            "ATR_HIGH_15": 1.4,
+            "ATR_LOW_15": 2.4
+          },
+          "mirror_of": "M_Pop_Medium_EXT_Up"
+        }
+      ],
+      "open_questions": [
+        "Spike uses BURST 2.0 and PCT 0.020 where Pop uses 3.0 and 0.025, despite ALSO carrying day-direction and day-extreme gates. Deliberate or drift?",
+        "Spike uses DayVolume 150000 where Sensitive uses 250000. Since Spike is otherwise a strict subset, a stock between 150k and 250k could fire Spike but not Sensitive \u2014 inverting the intended hierarchy."
+      ]
+    },
+    {
+      "id": "spike_hold",
+      "description": "A completed 5-minute spike bar followed by a hold. Peter's best-performing setup.",
+      "port": "as_is",
+      "build_order": 2,
+      "model": "Spike, then a short coil, then continuation. The coil is the stock DECIDING: if it is going to reverse it does so quickly, and if it does not reverse quickly it likely continues.",
+      "skeleton": {
+        "universe": [
+          "DayVolume(ALL_VENUES, 1, CURRENT, NO) >= 250000",
+          "Last(ALL_VENUES, CURRENT, NO) >= 2",
+          "ATRStock(ALL_VENUES, NO, DAILY, 14, CURRENT) / ClosePrice(PRIMARY, P1, NO) >= 0.025",
+          "RVOL20DAYTIMEADJUSTED >= 1.25"
+        ],
+        "day_gate": "Last >= ClosePrice(PRIMARY, P1, NO)",
+        "spike_bar": [
+          "range(5,P1) >= 0.50",
+          "range(5,P1) >= Last * 0.025",
+          "range(5,P1) / ATRStock >= 0.40"
+        ],
+        "volume": "MinuteVolume(5,P1) >= MinuteVolume(5,P2) * 1.25 OR MinuteVolume(5,P1) >= AvgDayVolume(20) * 0.03",
+        "retention": [
+          {
+            "anchor": "MinuteLow(1,P1)",
+            "bound": 0.25,
+            "tests": "the last completed minute held in the far quarter"
+          },
+          {
+            "anchor": "Last",
+            "bound": 0.25,
+            "tests": "price is in the far quarter RIGHT NOW"
+          },
+          {
+            "anchor": "MinuteLow(5,CURRENT)",
+            "bound": 0.5,
+            "tests": "price never round-tripped more than half the bar"
+          }
+        ],
+        "throttle": "MaxTriggersCount(MINUTES, 5, 1)",
+        "trigger": "none \u2014 pure state"
+      },
+      "rationale": {
+        "three_retention_clauses": "They test different things and all three are needed. The third uses a RUNNING minimum: its history matters. At 0.25 a single dip disqualified the whole remaining bar and the setup rolled to the next bar at a higher price (PLTR fired 179.15 when the band was 176.04). Removed entirely on 2026-09-03, which loosened the filter ~6x \u2014 only 5 of 29 fires that day would have passed the old bound. Restored at 0.50 on 09-23 alongside the Last clause.",
+        "percent_floor": "Added 2026-09-23. All six sharp-move filters had one; this did not. Without it large caps clear the ATR test on tiny percentage moves \u2014 ADI at 1.35%, DVN 1.19%, GE 1.46%.",
+        "volatility_floor": "Lowered 0.03 -> 0.025 on 09-03 because SPCX and PLTR both compute near 3.0% and sat exactly on the boundary."
+      },
+      "known_defects": [
+        "EXPIRES IN ~5 MINUTES. Everything keys off P1; once the bar rolls the setup vanishes even if still valid on the chart. A stock that spikes and bases 20 minutes later is invisible (MOH, RNG \u2014 unfixed since July).",
+        "Requires spike-then-pause. A continuous ramp (PLTR, EXLS) has no pause, so the qualifying moment only arrives once a bar flattens.",
+        "Repeat fires dominate the output: on 2026-09-21, 48 of 91 fires came from 18 distinct names (JAGX x6, VKTX x6, GRML x5).",
+        "Bare RVOL with no burst escape \u2014 the cumulative-dilution defect is LIVE in this filter, unlike the sharp-move six."
+      ],
+      "instances": [
+        {
+          "id": "M_Spike_Hold_Up",
+          "params": {
+            "direction": "up"
+          }
+        },
+        {
+          "id": "M_Spike_Hold_Down",
+          "params": {
+            "direction": "down"
+          },
+          "mirror_of": "M_Spike_Hold_Up"
+        }
+      ]
+    },
+    {
+      "id": "low_float",
+      "description": "Low-float runners and movers. Already free of stale references after the 2026-09-25 rebuild \u2014 use these as the reference implementation of the same-session normalisation pattern.",
+      "port": "as_is",
+      "build_order": 3,
+      "instances": [
+        {
+          "id": "LowFloat_HOD_Break_Up",
+          "hunts": "A low-float stock that has moved hard today and is breaking to new highs on expanding volume. No base requirement \u2014 the parabolic runner filter.",
+          "expression": [
+            "FloatShares <= 20",
+            "AdjustedClosePrice(P1) >= 0.25",
+            "AdjustedClosePrice(P1) <= 50",
+            "DayVolume(ALL_VENUES, 1, CURRENT, YES) >= 500000",
+            "( Last - ClosePrice(PRIMARY, P1, NO) ) / ClosePrice(PRIMARY, P1, NO) >= 0.20",
+            "( DayHigh(CURRENT) - DayLow(CURRENT) ) >= Last * 0.10",
+            "Last >= DayHigh(CURRENT) - 0.15 * ( DayHigh(CURRENT) - DayLow(CURRENT) )",
+            "( MinuteHigh(5,P1) - MinuteLow(5,P1) ) >= Last * 0.02",
+            "MinuteVolume(5,P1) >= MinuteVolume(5,P2) * 1.5 OR MinuteVolume(5,P1) >= DayVolume(CURRENT) * 0.03",
+            "MinuteVolume(5,CURRENT) * 24 >= MinuteVolume(120,CURRENT) * 3.0",
+            "NewMinuteHigh(5, NO)",
+            "MaxTriggersCount(MINUTES, 5, 1)"
+          ],
+          "rationale": {
+            "no_stale_references": "Contains NO ATRStock and NO AvgDayVolume. Only same-session data plus float and the prior close. This is deliberate \u2014 both stale-reference distortions hit exactly this filter's target population. See PORT_CONTRACT.md section 3.",
+            "day_high_tolerance": "Normalised to TODAY'S RANGE, not ATR. Gives ~60 cents of room on a stock that ran 4 points, and is automatically tight on one that has not moved. The ATR version gave 2-3 cents on MSGY and ELPW.",
+            "day_range_clause": "The stock genuinely moved today rather than just gapping and sitting.",
+            "bar_range_clause": "It is moving NOW, not drifting up. This is the dial if the list runs long.",
+            "no_base_block": "Deleted 2026-08-17 because WFF (+469%) never made one. A coil-based filter cannot catch a move that never pauses."
+          },
+          "notes": "FloatShares is a REAL gate here, unlike PM_LowFloat_Coil_Up. Whether it populates for foreign small-cap issuers is unverified, though MSGY returned a usable value."
+        },
+        {
+          "id": "LowFloat_Movers_List",
+          "type": "static",
+          "hunts": "Low-float stocks up significantly on the day, including premarket.",
+          "expression": [
+            "FloatShares <= 20",
+            "AdjustedClosePrice(P1) >= 0.25",
+            "AdjustedClosePrice(P1) <= 50",
+            "AvgDayVolume(ALL_VENUES, 20, NO) >= 5000",
+            "RVOL20DAYTIMEADJUSTED >= 2.0 OR ( TickTime <= 570 AND PM_RVOL >= 3.0 )",
+            "( Last(YES) - ClosePrice(PRIMARY, P1, NO) ) / ClosePrice(PRIMARY, P1, NO) >= 0.10",
+            "DayVolume(ALL_VENUES, 1, CURRENT, YES) >= 250000"
+          ],
+          "rationale": {
+            "adv_floor_near_inert": "Dropped from 250,000 to 5,000 \u2014 a sanity gate only \u2014 and REPLACED by a today's-volume floor. A 250k ADV gate excluded exactly the dormant low-floats that produce 400%+ days (WFF). A stock that normally trades nothing now qualifies provided it is genuinely trading today.",
+            "rvol_bridge": "RVOL reads 0 premarket because its numerator uses extended-hours NO. Without the PM_RVOL branch the list is empty until 09:30.",
+            "mixed_ext_flags": "Deliberate. YES on price and DayVolume so premarket counts; NO on AvgDayVolume so the baseline is a normal session."
+          },
+          "notes": "No MaxTriggersCount \u2014 suspected of interrupting static list membership."
+        },
+        {
+          "id": "PM_LowFloat_Coil_Up",
+          "port": "corrected",
+          "hunts": "A low-float stock gapped up hard premarket, coiling in the top quarter of its premarket range.",
+          "corrections": [
+            "Float <= 10000000  ->  Float <= 10",
+            "add TickTime <= 570",
+            "change the first coil clause from MinuteHigh_I(1,CURRENT)-MinuteLow_I(1,CURRENT) to the P2 bar"
+          ],
+          "original_defects": [
+            "THE FLOAT CLAUSE IS INERT. Float is denominated in MILLIONS, so 'Float <= 10000000' means 10 trillion shares and restricts nothing. The filter has no float gate despite its name. Identical bug was fixed in HOD_Base_Break_LF on 2026-08-13 by switching to FloatShares <= 10; this filter never got the same fix.",
+            "No TickTime gate on a premarket filter. PremarketDayHigh/Low/Volume freeze at 09:30 while Last keeps updating, so after the open it silently becomes 'gapped up, above the premarket high, with quiet 1-minute bars' measured against frozen references \u2014 and can fire all day.",
+            "First coil clause uses a forming 1-minute RANGE, trivially true early in every minute."
+          ],
+          "notes": "It still works in practice because the $1-50 band, PM_RVOL >= 5.0 and a 15% gap select small caps indirectly \u2014 but by proxy, so genuinely low-float names are not preferred over merely cheap ones."
+        }
+      ]
+    },
+    {
+      "id": "contra_abc",
+      "description": "Three-stage fade thesis, mirrored across both sides. Short side fades strength, Cap side fades weakness. The ONLY filters in the set that fade extension or measure acceleration \u2014 retiring them deletes that function entirely.",
+      "port": "as_is",
+      "build_order": 5,
+      "structure": {
+        "A": "accelerating move \u2014 the only acceleration test anywhere in the set",
+        "B": "overbought/oversold stretch (RSI 75/25) with displacement from a 30-minute extreme",
+        "C": "the break or reclaim after extension"
+      },
+      "shared": [
+        "DayVolume(ALL_VENUES, 1, CURRENT, NO) >= 1000000",
+        "ATRStock(ALL_VENUES, NO, DAILY, 14, CURRENT) / Last(ALL_VENUES, CURRENT, NO) <= 0.15",
+        "NewMinuteHigh(5, NO) | NewMinuteLow(5, NO)",
+        "MaxTriggersCount(MINUTES, 1, 1)"
+      ],
+      "acceleration_test": {
+        "expression": "( Last - MinuteHigh_I(5,P2) ) >= ( MinuteHigh_I(5,P2) - MinuteHigh_I(5,P4) ) * 2.0 AND MinuteHigh_I(5,P2) >= MinuteHigh_I(5,P4)",
+        "meaning": "The most recent ~10 minutes of gain must be at least TWICE the prior ~10 minutes. The second clause ensures the earlier leg was already rising, so this measures acceleration rather than reversal. 'FAST' means speeding up, not large.",
+        "degenerate_case": "When P2 and P4 highs are equal the right side is zero and the 2.0 multiplier does nothing \u2014 any new high passes. Only the 0.40 ATR displacement clause protects that path."
+      },
+      "known_defects": [
+        "Displacement windows are clock-aligned, so extension resets on the half hour \u2014 a stock grinding up for an hour reads unextended right after 10:30.",
+        "Volume clauses compare a FORMING bar to a completed prior bar while the NewMinute trigger fires at the instant of the extreme; the two race.",
+        "No RVOL on the A and C filters; only B carries RVOL >= 1.5.",
+        "ATR-only magnitude with no percent floor anywhere in the family."
+      ],
+      "instances": [
+        {
+          "id": "Contra_Short_A_FAST",
+          "params": {
+            "side": "short",
+            "stage": "A"
+          }
+        },
+        {
+          "id": "Contra_Short_B_Extended",
+          "params": {
+            "side": "short",
+            "stage": "B",
+            "rsi": 75,
+            "window": 30,
+            "atr": 0.5,
+            "rvol": 1.5
+          }
+        },
+        {
+          "id": "Contra_Short_C_Breakdown",
+          "params": {
+            "side": "short",
+            "stage": "C",
+            "room": 0.25
+          }
+        },
+        {
+          "id": "Contra_Cap_A_Fast",
+          "params": {
+            "side": "long",
+            "stage": "A"
+          },
+          "mirror_of": "Contra_Short_A_FAST"
+        },
+        {
+          "id": "Contra_Cap_B_Extended",
+          "params": {
+            "side": "long",
+            "stage": "B",
+            "rsi": 25,
+            "window": 30,
+            "atr": 0.5,
+            "rvol": 1.5
+          },
+          "mirror_of": "Contra_Short_B_Extended"
+        },
+        {
+          "id": "Contra_Reclaim_C",
+          "params": {
+            "side": "long",
+            "stage": "C",
+            "room": 0.25
+          },
+          "mirror_of": "Contra_Short_C_Breakdown",
+          "notes": "NAMING TRAP: this is the Cap-side C, not a separate concept. The six-filter structure is invisible from the filter list because it is not called Contra_Cap_C_Reclaim."
+        }
+      ]
+    }
+  ],
+  "individual_filters": [
+    {
+      "id": "Momo_VWAP_Divergence_Long",
+      "port": "corrected",
+      "priority": "TIER 1 \u2014 currently produces nothing",
+      "corrections": [
+        "DELETE the clause 'Last - VWAP >= 0.75'"
+      ],
+      "original_defects": [
+        "LOGICALLY UNSATISFIABLE. Contains both 'Last - VWAP <= -0.75' AND 'Last - VWAP >= 0.75' on the identical expression. Has never fired since it was written, and reports SET_RUNNING."
+      ],
+      "likely_intent": "Distance from VWAP of at least 0.75 in EITHER direction, written as two bounds and joined with AND instead of OR. Since 'Last / VWAP <= 0.97' already forces the below-VWAP side, the correct fix is to delete the second bound rather than change the operator.",
+      "notes": "Contains the best-constructed magnitude measure in the whole collection \u2014 ( Last - BB_Lower ) / ( SMA20 - BB_Lower ) <= 0.10, the bottom tenth of the lower half-band, scale-free across any price. It has never been evaluated."
+    },
+    {
+      "id": "Contra_Long_VWAP_Divergence",
+      "port": "corrected",
+      "priority": "TIER 1 \u2014 currently produces nothing",
+      "corrections": [
+        "'Last - VWAP = - 1.25'  ->  'Last - VWAP <= -1.25'"
+      ],
+      "original_defects": [
+        "EQUALITY ON A COMPUTED FLOAT. Last moves in penny increments and VWAP is a continuous average, so the difference landing exactly on -1.25 to float precision effectively never happens. Reads like an attempted fix of the Momo contradiction that lost its '<'."
+      ],
+      "notes": "Once fixed this is the CLEANEST filter in the Contra group \u2014 no MinuteClose_I, no hand-rolled RVOL, four clauses: down 60c+ over thirty minutes, >=3% below VWAP, >=$1.25 below VWAP, bottom tenth of the lower Bollinger half-band."
+    },
+    {
+      "id": "Quiet_Reversal_pair",
+      "port": "corrected",
+      "corrections": [
+        "'MinuteVolume(15,CURRENT) < MinuteVolume(15,P1)'  ->  'MinuteVolume(15,P1) < MinuteVolume(15,P2)'"
+      ],
+      "original_defects": [
+        "THE VOLUME-CONTRACTION CLAUSE IS INVERTED BY THE FORMING-BAR PROBLEM. MinuteVolume(15,CURRENT) accumulates from zero at each quarter-hour while MinuteVolume(15,P1) is a complete block, so the comparison is trivially true for the first several minutes of every block. The clause tests 'we are early in the quarter hour' far more than 'volume is drying up' \u2014 inverting the filter's entire premise. With no trigger and a 3-minute throttle, fires cluster at 9:30-9:35, 9:45-9:50, 10:00-10:05.",
+        "No trigger clause \u2014 pure state on a 3-minute throttle."
+      ],
+      "notes": "This is the ONLY volume-CONTRACTION clause in roughly forty filters; everything else demands expansion. Worth porting correctly. The custom field VolFade_1m_Smooth is already the correct implementation of the same idea.",
+      "hunts": "Exhaustion at the extreme \u2014 extended on the day, beyond yesterday's high/low, overbought/oversold, AND volume drying up."
+    },
+    {
+      "id": "Blowoff_Reversal_pair",
+      "port": "corrected",
+      "corrections": [
+        "add a trigger clause",
+        "add TickTime <= 960 to stop after-hours firing"
+      ],
+      "original_defects": [
+        "LOAD-BEARING ON A BROKEN FIELD. The displacement tiers are very loose (0.15 ATR over five minutes against 0.50 in the sharp-move family), so selectivity rests almost entirely on VWAP_UpperBand/LowerBand \u2014 which are visibly wrong with an unknown formula.",
+        "No trigger clause plus a 3-minute throttle: HUT fired at 19:22:47, 19:27:10, 19:31:24, 19:35:28, 19:39:22, 19:42:38, 19:45:59, 19:49:08, 19:52:46, 19:56:04 \u2014 one state re-firing into the evening, not ten signals."
+      ],
+      "worth_keeping": "LINEAR TIER SCALING \u2014 0.15/0.30/0.50/1.0 across 5/10/15/30 minutes is ~0.030/0.030/0.033/0.033 ATR per minute. Every other tiered filter uses square-root-ish scaling where the longest tier is far easier per minute (M_Drive's 30-minute branch is 3.5x easier than its 5-minute). Because all four tiers demand the same RATE, the OR acts as a partial workaround for clock-aligned windows \u2014 a move is caught whichever boundary it straddles. Port this idea."
+    },
+    {
+      "id": "M_Open_Flush_pair",
+      "port": "corrected",
+      "corrections": [
+        "add TickTime <= 600",
+        "change the OR between ATR and percent legs to AND within each tier"
+      ],
+      "original_defects": [
+        "No time gate despite 'Open' in the name. The gap clause compares DayBar_Open to the prior close \u2014 permanent state, true all day \u2014 so it runs on any gapper from 09:30 to the close. IOT and DOCU fired repeatedly from 10:05 through 15:55.",
+        "OR between the ATR and percent legs within each tier lets the easier threshold bind. High_ATR was deliberately changed OR -> AND for exactly this reason."
+      ],
+      "notes": "DayBar_Open WORKS \u2014 confirmed SET_RUNNING 09-16 and 09-21. Earlier notes claiming a subscription exception were wrong or described a context-dependent failure."
+    },
+    {
+      "id": "M_Drive_pair",
+      "port": "skip",
+      "notes": "A generation behind: no two-band ATR, no percent floors, no burst leg, ELVA clause present in all three tiers, square-root tier scaling making the 30-minute branch 3.5x easier per minute, and NewMinuteHigh(5) rather than (15) so it re-arms three times as often. Overlaps M_Pop_Sensitive_Up heavily. Bring forward or retire \u2014 do not port as-is."
+    },
+    {
+      "id": "M_Run_Hold_pair",
+      "port": "skip",
+      "notes": "Same generation as M_Drive. Additionally has a self-tightening ratchet: the retention clause and the range clause reference the same forming 15-minute window, so as the window develops its range can only grow, raising the retention bar. The filter gets progressively harder to satisfy as each window matures, then resets \u2014 fires cluster early in each 15-minute block."
+    },
+    {
+      "id": "Movers_Alists",
+      "type": "static",
+      "port": "corrected",
+      "corrections": [
+        "0.0075  ->  0.02 on BOTH the Up and Down lists"
+      ],
+      "original_defects": [
+        "RESULT-COUNTER OVERFLOW. Movers_Up_Alist hit 102,686 on 2026-09-21 and was disabled at 13:30. Cause: 0.75% on the day is not a move. The two magnitude clauses are also near-equivalent \u2014 for a stock whose ATR is 2% of price, 0.40 ATR IS 0.8% of price \u2014 so neither does independent work.",
+        "The Down list carries identical thresholds and has not tripped only because down days are rarer."
+      ],
+      "notes": "Because RNK_UP/RNK_DWN sort by the same measure the list gates on, the list self-prioritises \u2014 so several hundred members is a COUNTER problem, not a readability one. A 3-5x membership cut is sufficient; do not over-tighten."
+    }
+  ],
+  "custom_fields": {
+    "_note": "All 21 are Peter's own expressions, not Primus built-ins. The replacement must reproduce the DEFINITIONS, not merely provide equivalent primitives. Scale is inconsistent: 17 multiply by 100, 4 do not.",
+    "RVOL20DAYTIMEADJUSTED": {
+      "expression": "DayVolume(ALL_VENUES, 1, CURRENT, NO) / ( AvgDayVolume(ALL_VENUES, 20, NO) * curve(TickTime) )",
+      "curve": {
+        "570": 0.01,
+        "572": 0.022,
+        "575": 0.04,
+        "580": 0.07,
+        "585": 0.095,
+        "590": 0.115,
+        "595": 0.133,
+        "600": 0.15,
+        "630": 0.24,
+        "690": 0.37,
+        "780": 0.53,
+        "870": 0.7,
+        "930": 0.85,
+        "960": 1.0
+      },
+      "curve_note": "INTERPOLATED, NOT STEPPED \u2014 confirmed against the verbatim expression. Each IF branch contains a linear ramp, e.g. IF(TickTime <= 960, 0.85 + 0.15*(TickTime-930)/30, 1.0). A stepped implementation is wrong and reads ~35% low early in the session: at 09:31 the true value is 0.011 where a step gives 0.022. Verification: at 15:44 (TickTime 944) the formula yields 0.85 + 0.15*14/30 = 0.92, matching the documented PYPL figure. Full expression in RECOVERED_EXPRESSIONS.md.",
+      "defect": "CUMULATIVE DILUTION. Numerator is cumulative and the denominator approaches a full day, so a stock quiet until 2pm that then explodes still reads below 1.0. Worked example: PYPL 2026-08-14, ADV ~15M, news at 15:44 where the curve reads 0.92, denominator ~13.8M, cumulative ~10.4M -> RVOL ~0.75 against a 1.25 gate. Five documented misses.",
+      "port_as": "Build a TIME-LOCAL companion instead: MinuteVolume(30, CURRENT) / ( AvgDayVolume(20) * slope_at_minute * 30 ), where slope comes from the curve's own segment gradients (0.003/min in 10:00-10:30 vs 0.00178/min in 11:30-13:00). Immune to dilution, normalised to the stock's own average, and interpretable \u2014 3.0 means three times normal pace RIGHT NOW."
+    },
+    "PM_RVOL": {
+      "expression": "PremarketDayVolume(CURRENT) / ( AvgDayVolume(20) * 0.01 * pm_curve(TickTime) )",
+      "curve": {
+        "300": 0.03,
+        "360": 0.1,
+        "420": 0.2,
+        "480": 0.35,
+        "510": 0.5,
+        "540": 0.7,
+        "555": 0.85,
+        "570": 1.0
+      },
+      "calibration": "1.0 normal, 3-5 active, 10+ gapper",
+      "caveat": "The 0.01 assumes total premarket volume is ~1% of ADV for EVERY stock. Large caps, ADRs and earnings reporters read high; illiquid names low. A fixed threshold like 3.0 does not mean the same thing across the universe.",
+      "curve_note": "Also interpolated, same construction, 8 levels. Full expression in RECOVERED_EXPRESSIONS.md."
+    },
+    "displacement_and_position": {
+      "ATR_POS": "( Last - MinuteLow(5,CURRENT) ) / ATRStock * 100",
+      "ATR_NEG": "( MinuteHigh(5,CURRENT) - Last ) / ATRStock * 100",
+      "Spike_Range_Pct": "( MinuteHigh(5,P1) - MinuteLow(5,P1) ) / Last * 100",
+      "PM_RangePos": "( Last(YES) - PremarketDayLow ) / ( PMHigh - PMLow + 0.01 ) * 100",
+      "VWAP_Stretch": "( VWAP - Last ) / ATRStock",
+      "integrity_checks": "Each measures a clause its filter enforces, so the column validates the filter. Spike_Range_Pct must read >= 2.5 in any M_Spike_Hold log. ATR_POS must read >= 50 (high band) or >= 80 (low band) on a sharp-move fire.",
+      "diagnostic": "ATR_POS measures only the 5-minute leg, so any M_Drive fire showing ATR_POS well below 75 came from its 15- or 30-minute branch \u2014 the weak tiers.",
+      "scale_bug": "VWAP_Stretch is NOT multiplied by 100 while ATR_POS is, yet both measure distance in ATR units. Half an ATR shows as 50 in one column and 0.5 in the other. Normalise in the port.",
+      "propagation_candidate": "VWAP_Stretch could replace the percent-AND-dollar VWAP pair in the Contra filters \u2014 those need two clauses because neither percent nor dollars works alone across price levels (they cross at $37.50). ATR normalisation is scale-free in one clause."
+    },
+    "retracement": {
+      "Retrace_Pct_Up": "( MinuteHigh(5,P1) - MinuteLow(5,CURRENT) ) / ( range + 0.01 ) * 100",
+      "Retrace_Pct_Down": "( MinuteHigh(5,CURRENT) - MinuteLow(5,P1) ) / ( range + 0.01 ) * 100",
+      "Retrace_1m_Up": "( MinuteHigh(5,P1) - MinuteLow(1,P1) ) / ( range + 0.01 ) * 100",
+      "Retrace_1m_Down": "( MinuteHigh(1,P1) - MinuteLow(5,P1) ) / ( range + 0.01 ) * 100",
+      "which_clause": "The Pct pair uses the RUNNING extreme of the forming bar, measuring the retention clause bounded at 0.50. The 1m pair uses completed 1-minute P1, measuring the clause bounded at 0.25.",
+      "integrity_check": "Every Retrace_Pct value in a current log must be <= 50. A value above 50 means the running clause has been dropped from the filter.",
+      "negative_values": "Mean the minute after the spike traded entirely beyond the spike bar \u2014 the strongest continuation signature. Possible because the 1-minute P1 bar sits AFTER the 5-minute P1 bar on the clock."
+    },
+    "volume_rate": {
+      "VolFade_1m_Smooth": "( (V_CURRENT+V_P1+V_P2) - (V_P3+V_P4+V_P5) ) / ( V_P3+V_P4+V_P5 + 1 )",
+      "VolROC_1m_3": "( MinuteVolume(1,CURRENT) - MinuteVolume(1,P3) ) / MinuteVolume(1,P3)",
+      "VolROC3": "( MinuteVolume(5,CURRENT) - MinuteVolume(5,P3) ) / MinuteVolume(5,P3)",
+      "port": "Port VolFade_1m_Smooth only. Both ROC fields lack a divide-by-zero guard and put the forming CURRENT bar alone in the numerator, so each reads near -1 at the start of every bar and climbs through it \u2014 a sawtooth, worse on VolROC3 whose reset is every five minutes.",
+      "significance": "Summing N consecutive 1-minute bars back from CURRENT IS A ROLLING WINDOW \u2014 the workaround for clock-aligned windows. This technique already exists in two of Peter's own expressions.",
+      "remaining_bias": "MinuteVolume(1,CURRENT) is one of three terms, so just after a minute tick the recent sum is understated by ~1/3 and reads falsely FADING. Use P1+P2+P3 vs P4+P5+P6 in the port."
+    },
+    "auction": {
+      "Clear_ATR": "( ClearPricePrimary - Last(YES) ) / ATRStock * 100",
+      "Near_ATR": "( NearPricePrimary - Last(YES) ) / ATRStock * 100",
+      "Imb_Buy_Ratio": "ImbalanceBuyVolume(ANY) / AvgDayVolume(20) * 100",
+      "Imb_Sell_Ratio": "ImbalanceSellVolume(ANY) / AvgDayVolume(20) * 100",
+      "meaning": "Clear_ATR and Near_ATR state the expected auction move normalised to the stock's own volatility \u2014 50 means half an ATR into the close whether the stock is $12 or $600.",
+      "missing_guard": "Neither guards against an unpublished clearing price. If ClearPricePrimary returns 0, the field produces a large NEGATIVE reading rather than a blank \u2014 looking like a big expected down-move when it means no data. Add 'ClearPricePrimary > 0'. The NYSE IND lists already use exactly this guard on IndBid."
+    },
+    "ranking": {
+      "RNK_UP": "( Last(YES) - ClosePrice(P1) ) / ATRStock * 100",
+      "RNK_DWN": "( ClosePrice(P1) - Last(YES) ) / ATRStock * 100",
+      "note": "Same measure the Movers lists gate on (>= 0.40 ATR), so every member reads >= 40 and the list sorts by the quantity it screens on."
+    },
+    "Spike_Vol_Pct": {
+      "expression": "MinuteVolume(5,P1) * 100 / AvgDayVolume(20)",
+      "note": "Multiply BEFORE dividing \u2014 the original divided first and returned 0 on every row through integer truncation.",
+      "caveat": "Divides by AvgDayVolume, so it inherits the reverse-split distortion: after a 1-for-4 split it reads ~4x too LOW, understating exactly the fire worth noticing."
+    }
+  },
+  "remaining_to_spec": {
+    "_note": "CORRECTION 2026-10-09: an earlier version of this note claimed these were 'fully written out in the master'. That was WRONG for the Contra group and Breakout_Hold \u2014 the master described them in prose without code blocks. Verbatim expressions for 19 of them have since been recovered from the session transcript into RECOVERED_EXPRESSIONS.md. Only Contra Long/Short All, CatchALL_LF_HOD and plain Halted still require the Primus editor.",
+    "breakout": [
+      "Breakout_Hold_Up",
+      "Breakout_Hold_Down",
+      "Base_Break_Hold_Up",
+      "Base_Break_Hold_Down",
+      "HOD_Base_Break_LQ"
+    ],
+    "m_series": [
+      "M3_Breakout_Long",
+      "M4_Breakdown_Short",
+      "M5_Pullback_Long",
+      "M6_Bounce_Short",
+      "M7_GrindUp",
+      "M8_GrindDown"
+    ],
+    "statics": [
+      "Movers_Up_Alist",
+      "Movers_Down_Alist",
+      "PM_Coil_Up",
+      "PM_Coil_Down",
+      "Imbalance_NYSE_Buy",
+      "Imbalance_NYSE_Sell",
+      "Imbalance_Nasdaq_Buy",
+      "Imbalance_Nasdaq_Sell",
+      "Halted_Static_New_Minute",
+      "NYSE_IND_UP",
+      "NYSE_IND_DOWN"
+    ],
+    "legacy_contra_v": [
+      "Contra_Long_V5",
+      "Contra_Long_V8",
+      "Contra_Long_Parabolic",
+      "Contra_Long_All",
+      "Contra_Short_V5",
+      "Contra_Short_V8",
+      "Contra_Short_Parabolic",
+      "Contra_Short_All",
+      "Contra_Long_bare",
+      "Contra_Short_bare"
+    ]
+  }
+}

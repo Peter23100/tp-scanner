@@ -1,7 +1,7 @@
-# FOURTH AREA: statics and premarket lists (master §5). 12 of 13.
+# FOURTH AREA: statics and premarket lists (master §5). All 13; PM_LowFloat_Coil_Up is from the
+# verbatim expression in spec/port/RECOVERED_EXPRESSIONS.md.
 #
-# NOT HERE: PM_LowFloat_Coil_Up (§5.6 describes it but doesn't quote it) and the plain `Halted`
-# static (not collected). Contra group: see filters/README.md.
+# NOT HERE: the plain `Halted` static (never collected). Contra group: contra.scan.
 #
 # Hours are `extended` wherever the Primus expression reads premarket data (`Last(YES)`,
 # PM_RVOL, premarket high/low/volume) or auction data published outside RTH.
@@ -166,4 +166,29 @@ list NYSE_IND_DOWN {
      and (imb_buy(nyse) > 0 or imb_sell(nyse) > 0)
      and ind_bid < prev_close
      and ind_bid > 0
+}
+
+# §5.6 PM_Coil_Up's structure for low floats: $1-50, PM_RVOL 5+, a 15% gap (percent only), and a
+# premarket range of 5%+ of the prior close. No ADV floor, deliberately (the WFF lesson).
+# CORRECTED (CHANGES.md): Primus has `Float <= 10000000`, but Float is in MILLIONS there, so it
+# meant ten trillion shares and filtered nothing; the loader refuses that form. Now 10 million
+# shares, the intent its name states. Otherwise as loaded, like PM_Coil_Up: no premarket-only gate
+# (`hours pre` would be fix queue 7).
+trigger PM_LowFloat_Coil_Up {
+    side long
+    screen fourth
+    hours extended
+    cooldown 5m
+    show PM_RangePos
+    when float <= 10_000_000
+     and prev_close >= 1.00
+     and prev_close <= 50
+     and pm_volume >= 100_000
+     and PM_RVOL >= 5.0
+     and (last - prev_close) / prev_close >= 0.15
+     and (pm_high - pm_low) / prev_close >= 0.05
+     and last >= vwap_ext
+     and last >= pm_high - 0.25 * (pm_high - pm_low)
+     and (high(1m) - low(1m)) / (pm_high - pm_low) <= 0.15
+     and (high(1m, 1) - low(1m, 1)) / (pm_high - pm_low) <= 0.15
 }

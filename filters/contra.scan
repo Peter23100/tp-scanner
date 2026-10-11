@@ -1,0 +1,292 @@
+# FOURTH AREA: the Contra group (master §4C): 16 filters, translated from the verbatim expressions
+# in spec/port/RECOVERED_EXPRESSIONS.md. They fade extension and measure acceleration, a job no
+# other filter in the set does.
+#
+# NOT HERE (need the Primus editor): Contra_Long_All / Contra_Short_All (six-branch ORs, not
+# recovered), and the "unnamed short-side divergence filter" the master quotes one clause of
+# (§4C, the hand-rolled rolling window). The master's "14" doesn't match its own list.
+#
+# Translated as loaded, defects included (master §4C), EXCEPT the two that can't load at all here,
+# corrected per spec/port/filters.json and logged in filters/CHANGES.md:
+#   Momo_VWAP_Divergence_Long    contradictory bounds (the loader refuses them)
+#   Contra_Long_VWAP_Divergence  `= -1.25` (the language has no `=`)
+#
+# Primus -> here, beyond filters/README.md's table:
+#   MinuteOpen_I / MinuteClose_I(N, Pk)  open(Nm, k) / close(Nm, k): first / last price of the
+#                                        rolling window k windows back. MinuteClose_I(6, P5) is
+#                                        the close of the 6 minutes ending 30 minutes ago.
+#   `close(5m, k) < open(5m, k)`        a red 5-minute stretch (Primus: a red clock bar)
+#   BollingerBands(..., LowerBand, V2)  bb_lower(5m, 20, 2)
+#   SMAStock(..., MINUTES_5, PERIOD_20) sma(5m, 20)
+#   `LAST>5`, `Last >5`                 last > 5
+
+# --- Shared measures ------------------------------------------------------------------------
+
+# The V generation's hand-rolled RVOL: a LINEAR day (390 minutes), not RVOL_CURVE. At 09:30 exactly
+# the divisor is 0, which here is unknown (in Primus it passed trivially for minutes, §4C).
+field CONTRA_RVOL = day_volume / (adv * (time - 9:30) / 390)
+
+# Five-minute pace against the trailing two hours, `(MinuteVolume(5) * 24) / MinuteVolume(120)`.
+field BURST_120 = volume(5m) * 24 / volume(120m)
+
+# --- A/B/C generation: clean exact mirrors. A = accelerating, B = stretched, C = break/reclaim --
+
+# Up 0.40 ATR off the 15-minute low, and the last ~10 minutes' gain at least twice the ~10 before.
+trigger Contra_Short_A_FAST {
+    side short
+    screen fourth
+    cooldown 1m
+    when day_volume >= 1_000_000
+     and up15 / atr >= 0.40
+     and up15 >= 0.50
+     and atr / last <= 0.15
+     and (last - high(5m, 2)) >= (high(5m, 2) - high(5m, 4)) * 2.0
+     and high(5m, 2) >= high(5m, 4)
+     and volume(5m) >= volume(5m, 1) * 2.0
+     and new_high(5m)
+}
+
+# Overbought: RSI 75+, half an ATR off the 30-minute low, above VWAP.
+trigger Contra_Short_B_Extended {
+    side short
+    screen fourth
+    cooldown 1m
+    when day_volume >= 1_000_000
+     and rsi(5m, 14) >= 75
+     and up30 / atr >= 0.50
+     and up30 >= 0.50
+     and atr / last <= 0.15
+     and RVOL20DAYTIMEADJUSTED >= 1.5
+     and last > vwap
+     and new_high(5m)
+}
+
+# After a 15-minute range of 0.40 ATR+, breaking the prior five minutes' low.
+trigger Contra_Short_C_Breakdown {
+    side short
+    screen fourth
+    cooldown 1m
+    when day_volume >= 1_000_000
+     and (high(15m) - low(15m)) / atr >= 0.40
+     and (high(15m) - low(15m)) >= 0.50
+     and atr / last <= 0.15
+     and up15 / atr >= 0.25
+     and last <= low(5m, 1)
+     and volume(5m) >= volume(5m, 1)
+     and new_low(5m)
+}
+
+trigger Contra_Cap_A_Fast {
+    side long
+    screen fourth
+    cooldown 1m
+    when day_volume >= 1_000_000
+     and dn15 / atr >= 0.40
+     and dn15 >= 0.50
+     and atr / last <= 0.15
+     and (low(5m, 2) - last) >= (low(5m, 4) - low(5m, 2)) * 2.0
+     and low(5m, 4) >= low(5m, 2)
+     and volume(5m) >= volume(5m, 1) * 2.0
+     and new_low(5m)
+}
+
+trigger Contra_Cap_B_Extended {
+    side long
+    screen fourth
+    cooldown 1m
+    when day_volume >= 1_000_000
+     and rsi(5m, 14) <= 25
+     and dn30 / atr >= 0.50
+     and dn30 >= 0.50
+     and atr / last <= 0.15
+     and RVOL20DAYTIMEADJUSTED >= 1.5
+     and last < vwap
+     and new_low(5m)
+}
+
+# The Cap-side C (naming trap: not called Contra_Cap_C_Reclaim).
+trigger Contra_Reclaim_C {
+    side long
+    screen fourth
+    cooldown 1m
+    when day_volume >= 1_000_000
+     and (high(15m) - low(15m)) / atr >= 0.40
+     and (high(15m) - low(15m)) >= 0.50
+     and atr / last <= 0.15
+     and dn15 / atr >= 0.25
+     and last >= high(5m, 1)
+     and volume(5m) >= volume(5m, 1)
+     and new_high(5m)
+}
+
+# --- V generation: older, approximate mirrors -------------------------------------------------
+
+# ⚠ The recovered expression has an unmatched `)` after `NewMinuteLow(5, NO)`: its opening bracket
+# was lost, so whatever it grouped is unknown. Translated as a plain AND chain. The master (§4C)
+# lists this filter among those with NO trigger clause, yet this text has one: check it in Primus.
+trigger Contra_Long {
+    side long
+    screen fourth
+    cooldown 1m
+    when day_volume > 500_000
+     and rsi(5m, 14) < 25
+     and CONTRA_RVOL > 1.5
+     and BURST_120 > 1.5
+     and (last - close(6m, 5)) < -0.40
+     and close(5m, 1) < open(5m, 1)
+     and close(5m, 2) < open(5m, 2)
+     and close(5m, 3) < open(5m, 3)
+     and close(5m, 4) < open(5m, 4)
+     and last - vwap < -0.75
+     and new_low(5m)
+     and last > 5
+}
+
+# No trigger clause: re-fires every minute while true (§4.3 of the port contract).
+trigger Contra_Short {
+    side short
+    screen fourth
+    cooldown 1m
+    when day_volume >= 500_000
+     and (last - open(1m, 5)) > 0.65
+     and last / open(1m, 5) > 1.02
+     and BURST_120 > 1.77
+     and last - vwap > 1.00
+     and last > 5
+}
+
+# No trigger clause (the short side has new_high(10m); fix queue: add new_low(10m)).
+trigger Contra_Long_V5 {
+    side long
+    screen fourth
+    cooldown 1m
+    when day_volume > 500_000
+     and CONTRA_RVOL > 1.25
+     and BURST_120 > 1.75
+     and rsi(5m, 14) <= 25
+     and (last - open(6m, 5)) <= 0.50
+     and close(5m, 1) < open(5m, 1)
+     and close(5m, 2) < open(5m, 2)
+     and close(5m, 3) < open(5m, 3)
+     and close(5m, 4) < open(5m, 4)
+     and last - vwap <= -0.75
+     and last > 5
+}
+
+trigger Contra_Short_V5 {
+    side short
+    screen fourth
+    cooldown 1m
+    when day_volume > 500_000
+     and CONTRA_RVOL > 1.25
+     and BURST_120 > 1.75
+     and rsi(5m, 14) >= 75
+     and (last - open(6m, 5)) >= -0.50
+     and close(5m, 1) > open(5m, 1)
+     and close(5m, 2) > open(5m, 2)
+     and close(5m, 3) > open(5m, 3)
+     and close(5m, 4) > open(5m, 4)
+     and last - vwap > 0.75
+     and new_high(10m)
+     and last > 5
+}
+
+# The two-sided `new_high(5m) or new_low(5m)` is near-inert as an event gate (§4C).
+trigger Contra_Long_V8 {
+    side long
+    screen fourth
+    cooldown 1m
+    when day_volume > 500_000
+     and CONTRA_RVOL > 1.25
+     and BURST_120 > 1.75
+     and rsi(5m, 14) <= 25
+     and (last - open(6m, 5)) <= -0.50
+     and close(5m, 1) < open(5m, 1)
+     and close(5m, 2) < open(5m, 2)
+     and close(5m, 3) < open(5m, 3)
+     and close(5m, 4) < open(5m, 4)
+     and last / vwap < 0.98
+     and last <= bb_lower(5m, 20, 2)
+     and last - vwap <= -0.75
+     and (new_high(5m) or new_low(5m))
+     and last > 5
+}
+
+trigger Contra_Short_V8 {
+    side short
+    screen fourth
+    cooldown 1m
+    when day_volume > 500_000
+     and CONTRA_RVOL > 1.25
+     and BURST_120 > 1.75
+     and rsi(5m, 14) >= 75
+     and (last - open(6m, 5)) >= 0.50
+     and close(5m, 1) > open(5m, 1)
+     and close(5m, 2) > open(5m, 2)
+     and close(5m, 3) > open(5m, 3)
+     and close(5m, 4) > open(5m, 4)
+     and last / vwap > 1.02
+     and last >= bb_upper(5m, 20, 2)
+     and last - vwap > 0.75
+     and new_high(10m)
+     and last > 5
+}
+
+# Down 5%+ over thirty minutes, RSI 30 or less. `last - vwap <= 0.75` (positive) is probably the
+# deliberate loose ceiling the master suspects (§4C).
+trigger Contra_Long_Parabolic {
+    side long
+    screen fourth
+    cooldown 1m
+    when day_volume >= 500_000
+     and rsi(5m, 14) <= 30
+     and (last - close(6m, 5)) <= -0.50
+     and (last - close(6m, 5)) / close(6m, 5) * 100 < -5.0
+     and close(5m, 1) < open(5m, 1)
+     and close(5m, 2) < open(5m, 2)
+     and BURST_120 > 1.5
+     and last - vwap <= 0.75
+     and (new_high(5m) or new_low(5m))
+     and last > 5
+}
+
+# No trigger clause.
+trigger Contra_Short_Parabolic {
+    side short
+    screen fourth
+    cooldown 1m
+    when day_volume >= 750_000
+     and (last - open(1m, 5)) > 0.50
+     and last / open(1m, 5) > 1.015
+     and BURST_120 > 1.75
+     and last - vwap > 0.75
+     and last > 5
+}
+
+# CORRECTED (CHANGES.md): Primus also has `last - vwap >= 0.75` here, contradicting the
+# `<= -0.75` clause, so it never fired. Deleted, as filters.json says (`last / vwap <= 0.97`
+# already forces the below-VWAP side). No price floor and no trigger, as loaded.
+trigger Momo_VWAP_Divergence_Long {
+    side long
+    screen fourth
+    cooldown 1m
+    when day_volume >= 500_000
+     and (last - open(6m, 5)) < -0.50
+     and last / vwap <= 0.97
+     and last - vwap <= -0.75
+     and (last - bb_lower(5m, 20, 2)) / (sma(5m, 20) - bb_lower(5m, 20, 2)) <= 0.10
+}
+
+# CORRECTED (CHANGES.md): Primus has `Last - VWAP = - 1.25`, equality on a computed price, which
+# effectively never holds. Now `<= -1.25`. Bottom tenth of the lower Bollinger half-band.
+trigger Contra_Long_VWAP_Divergence {
+    side long
+    screen fourth
+    cooldown 1m
+    when day_volume >= 500_000
+     and (last - open(6m, 5)) < -0.60
+     and last / vwap <= 0.97
+     and (last - bb_lower(5m, 20, 2)) / (sma(5m, 20) - bb_lower(5m, 20, 2)) <= 0.10
+     and last - vwap <= -1.25
+     and last > 5
+}

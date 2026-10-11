@@ -1,0 +1,183 @@
+{
+  "$schema_version": "1.0",
+  "generated": "2026-09-25",
+  "purpose": "Regression set for the scanner port. Every case is a REAL session with a known outcome and a documented reason. Not synthetic. A port that passes all of these reproduces the useful behaviour without the known defects.",
+  "usage": "Replay the named session's market data and assert the expected outcome. The must_not_fire cases matter as much as the must_fire ones — they encode distinctions that took weeks to find.",
+
+  "must_catch": [
+    {
+      "symbol": "WFF",
+      "date": "2026-08-15",
+      "filters": ["LowFloat_HOD_Break_Up", "LowFloat_Movers_List"],
+      "move": "+469% intraday",
+      "why_it_matters": "Normally dormant low-float. A 250k AvgDayVolume floor excluded it; a today's-volume floor admits it. Also made NO BASE at any point, which is why the base block was deleted from the HOD filter.",
+      "tests": ["today's-volume floor replaces ADV floor", "no base requirement on the runner filter"]
+    },
+    {
+      "symbol": "PFSA",
+      "date": "2026-08-18",
+      "filters": ["LowFloat_HOD_Break_Up"],
+      "move": "+449% after a 1-for-4 reverse split",
+      "why_it_matters": "AvgDayVolume(20) was inflated ~4x by unadjusted historical share counts, making every ADV-normalised clause ~4x too strict on exactly the right name.",
+      "tests": ["split-immune volume leg: MinuteVolume(5,P1) >= DayVolume(CURRENT) * 0.03", "no AvgDayVolume anywhere in the low-float family"]
+    },
+    {
+      "symbol": "MSGY",
+      "date": "2026-09-25",
+      "filters": ["LowFloat_HOD_Break_Up"],
+      "move": "1.97 prior close, ramped to 5.95, +202%, 23M shares, float under 2M",
+      "why_it_matters": "Sat between 1.73 and 2.05 for months, so ATR was ~0.12 and the old 'Last >= DayHigh - 0.15 * ATRStock' clause allowed only 2-3 CENTS. The day-range normalisation gives ~60 cents.",
+      "tests": ["day-high tolerance normalised to today's range, not ATR"]
+    },
+    {
+      "symbol": "ELPW",
+      "date": "2026-09-25",
+      "filters": ["LowFloat_HOD_Break_Up"],
+      "move": "2.68 prior close, ran to 4.88, +65%",
+      "why_it_matters": "Same stale-ATR failure as MSGY, PLUS a reverse split (54,972 print on the daily chart) distorting AvgDayVolume. Both stale references in one name.",
+      "tests": ["day-range tolerance", "split-immune volume"]
+    },
+    {
+      "symbol": "PYPL",
+      "date": "2026-08-14",
+      "time": "15:44",
+      "filters": ["sharp_move family"],
+      "move": "News-driven spike late session",
+      "why_it_matters": "ADV ~15M; at 15:44 the RVOL curve reads 0.92 so the denominator is ~13.8M. Dead all session plus a 2.4M spike bar gives ~10.4M cumulative -> RVOL ~0.75 against a 1.25 gate. The burst leg catches it; cumulative RVOL cannot.",
+      "tests": ["time-local volume measure", "burst OR leg"]
+    },
+    {
+      "symbols": ["AMBA", "CMG", "CRM", "WDAY"],
+      "times": ["12:30", "12:45", "14:30", "14:30"],
+      "filters": ["sharp_move family", "spike_hold"],
+      "why_it_matters": "The same cumulative-dilution pattern at four different times of day. Note that M_Spike_Hold still carries a BARE RVOL clause with no burst escape — the port must not reproduce that.",
+      "tests": ["time-local volume measure applies across ALL filters, not just the sharp-move six"]
+    },
+    {
+      "symbol": "SPCX",
+      "filters": ["M_Spike_Hold_Up"],
+      "why_it_matters": "ATR/price computes near 3.0%, sitting exactly on the volatility-floor boundary. Floor was lowered 0.03 -> 0.025 for this.",
+      "tests": ["volatility floor at 0.025, not 0.03"]
+    },
+    {
+      "symbol": "PLTR",
+      "filters": ["M_Spike_Hold_Up"],
+      "why_it_matters": "Continuous ramp with no pause. Also the case where a 0.25 running-low bound disqualified the whole bar after one dip, so the setup rolled to the next bar at a higher price — it fired at 179.15 when the band was 176.04.",
+      "tests": ["running-low bound at 0.50, not 0.25", "entry-timing: the fire price should not be materially above the retention band"]
+    },
+    {
+      "symbol": "SNDK",
+      "date": "2026-09-16",
+      "filters": ["M_Spike_Hold_Up"],
+      "why_it_matters": "A clean positive — fired correctly. Use as a sanity check that tightening has not broken the core case.",
+      "tests": ["baseline positive"]
+    }
+  ],
+
+  "must_reject": [
+    {
+      "symbol": "WGS",
+      "contrast_with": "NRG",
+      "filters": ["M_Spike_Hold_Up"],
+      "why_it_matters": "THE MOST IMPORTANT DISTINCTION IN THE SET. WGS and NRG held IDENTICAL positions in their spike bars — same retracement, same retention. WGS's move was already over; NRG's was still going. The separator is the LAST-MINUTE RANGE: a stock still moving has a wide final minute, a stock that has stopped has a narrow one.",
+      "tests": ["position alone is insufficient", "a last-minute range or bar-range clause distinguishes still-moving from move-over"]
+    },
+    {
+      "symbols": ["ADI", "DVN", "GE"],
+      "moves": ["1.35%", "1.19%", "1.46%"],
+      "filters": ["M_Spike_Hold_Up"],
+      "why_it_matters": "Large caps clearing the ATR magnitude test on tiny percentage moves. The 2.5% percent floor added 2026-09-23 rejects them.",
+      "tests": ["percent floor of 2.5% on the spike bar"]
+    },
+    {
+      "symbol": "TSEM",
+      "filters": ["M_Pop_Sensitive_Up"],
+      "why_it_matters": "Fired on a smooth 15-minute ramp. Displacement says how FAR, never how QUICKLY — a grind produces the same number as a crash. The concentration clause (5-minute displacement >= 50% of the 15-minute displacement) rejects it.",
+      "tests": ["concentration clause on the 15-minute tier"]
+    },
+    {
+      "symbol": "HUT",
+      "date": "2026-09-21",
+      "times": ["19:22:47", "19:27:10", "19:31:24", "19:35:28", "19:39:22", "19:42:38", "19:45:59", "19:49:08", "19:52:46", "19:56:04"],
+      "filters": ["Blowoff_Reversal"],
+      "why_it_matters": "ONE state re-firing into the evening on frozen values, not ten signals. A filter with no trigger clause and a 3-minute throttle produces this.",
+      "tests": ["trigger clause required", "session time gate", "no re-firing on unchanged state"]
+    },
+    {
+      "symbols": ["IOT", "DOCU"],
+      "window": "10:05 through 15:55",
+      "filters": ["M_Open_Flush"],
+      "why_it_matters": "The gap clause compares DayBar_Open to the prior close — permanent state, true all day. An 'Open' filter with no TickTime gate runs until the close.",
+      "tests": ["TickTime <= 600 on open-scoped filters", "permanent-state clauses need a time gate"]
+    },
+    {
+      "symbol": "PFG",
+      "filters": ["Base_Break_Hold_Up"],
+      "why_it_matters": "STALE BREAKOUT. The monthly-level clause tests that price is above a prior-month high, which stays true for weeks after the break. Fired on a stock that had broken out long before, with no requirement that the break be recent.",
+      "tests": ["same-session break requirement, not merely 'above a monthly level'"]
+    },
+    {
+      "scenario": "Movers_Up_Alist result counter",
+      "date": "2026-09-21",
+      "value": 102686,
+      "disabled_at": "13:30",
+      "filters": ["Movers_Up_Alist"],
+      "why_it_matters": "0.75% on the day is not a move. The two magnitude clauses are near-equivalent (for a stock whose ATR is 2% of price, 0.40 ATR IS 0.8% of price) so neither does independent work.",
+      "tests": ["membership stays well under any counter cap over a full session", "threshold at 2%"]
+    },
+    {
+      "scenario": "Repeat-fire concentration",
+      "date": "2026-09-21",
+      "detail": "48 of 91 M_Spike_Hold fires came from 18 distinct names — JAGX x6, VKTX x6, GRML x5",
+      "filters": ["M_Spike_Hold"],
+      "why_it_matters": "A 5-minute throttle still allows six fires from one name in a session. Output volume overstates opportunity count.",
+      "tests": ["per-symbol session cap, or a distinct-name view in the output"]
+    }
+  ],
+
+  "unsatisfiable_at_load": [
+    {
+      "filter": "Momo_VWAP_Divergence_Long",
+      "defect": "Last - VWAP <= -0.75 AND Last - VWAP >= 0.75 on the identical expression",
+      "expected": "The loader must REJECT this at parse time with a clear message. It currently reports SET_RUNNING and has never fired."
+    },
+    {
+      "filter": "Contra_Long_VWAP_Divergence",
+      "defect": "Last - VWAP = -1.25 — exact equality on a computed float",
+      "expected": "The loader must WARN at parse time. Equality on a continuously-valued expression is effectively never true."
+    },
+    {
+      "filter": "PM_LowFloat_Coil_Up",
+      "defect": "Float <= 10000000 where Float is denominated in millions — the clause means 10 trillion shares",
+      "expected": "A units-aware check should flag a float comparison whose magnitude implies no filtering. This same bug was fixed in one filter in August and missed in this one."
+    }
+  ],
+
+  "engine_behaviour_checks": [
+    {
+      "name": "continuous evaluation",
+      "evidence": "Across 98 fires from M_Drop_Sensitive_Down, timestamp seconds span the whole 0-59 range with only 4 at exactly :00.",
+      "assert": "Instant-true conditions are not missed by sampling. Evaluation is per-tick or near it, NOT 20-30s snapshots."
+    },
+    {
+      "name": "rolling vs clock-aligned windows",
+      "evidence": "MinuteHigh(30, CURRENT) at 10:01 contains one minute of data. A move straddling a boundary is measured as two smaller moves — roughly one spike in five.",
+      "assert": "The replacement uses ROLLING windows. This is the single highest-value structural difference, and the reason several filters hand-roll windows by summing consecutive 1-minute bars."
+    },
+    {
+      "name": "forming-bar range is near zero",
+      "evidence": "Quiet_Reversal's MinuteVolume(15,CURRENT) < MinuteVolume(15,P1) is trivially true for the first several minutes of every quarter-hour, inverting the filter's premise.",
+      "assert": "Any clause comparing a forming bar's RANGE or ACCUMULATING VOLUME against a completed bar is flagged at load time. Forming-bar EXTREMES (running max/min) are safe and must not be flagged."
+    },
+    {
+      "name": "integer division",
+      "evidence": "Spike_Vol_Pct originally divided before multiplying and returned 0 on every row.",
+      "assert": "Arithmetic is floating-point throughout, or the loader warns on A / B * 100 where A < B is possible."
+    },
+    {
+      "name": "loud failure",
+      "evidence": "Filters fault mid-session after repeated exceptions and are then silently disabled. A disabled filter and a quiet market look identical.",
+      "assert": "Any expression that faults surfaces immediately and visibly. This cost months of silent non-production on two filters."
+    }
+  ]
+}
