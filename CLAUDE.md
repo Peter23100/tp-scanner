@@ -64,11 +64,24 @@ When the user supplies a newer master file, diff it against `spec/primus/`, repl
 |---|---|
 | `crates/tp-marketdata` | clock, typed prices, bars, windows, indicators, Massive flat-file reader |
 | `crates/tp-scan-engine` | language (`lang.rs`), measures (`measure.rs`), state, evaluator + explain, scan loop, JSONL instrumentation |
-| `crates/tp-scan-cli` | `tp-scan check` / `tp-scan replay` (formats at the top of `main.rs`) |
+| `crates/tp-scan-cli` | `tp-scan check` / `replay` / `sync` / `fetch-day` / `live` (formats at the top of `main.rs`) |
+| `crates/tp-massive` | Massive: `ws.rs` live source + supervisor, `rest.rs`, `daily_cache.rs` (raw days + splits, adjusted per session), `flatfiles.rs` |
+| `app/` | Tauri 2 + React desktop app. **Separate Cargo workspace** (`app/src-tauri`): test there. `scanner.rs` = engine thread, `layout.rs` = display.json |
+| `filters/display.json` | screens → rows → columns → panels/charts, link colours. Checked against filter names at load |
+| `ROADMAP.md` | the plan to April 2027; keep it current |
 | `filters/` | the live filter set; `LANGUAGE.md` reference, `CHANGES.md` log, `README.md` translation notes |
 | `examples/recipes.scan` | cookbook filters; compiled by tests, never loaded to run |
 | `spec/primus/` | the user's master, verbatim, plus the four screen PNGs |
 | `spec/port/` | `PORT_CONTRACT.md` (what to build), `filters.json` (per-filter port decisions: as_is / corrected / skip), `fixtures.json` (the REAL-session regression set: run it once data exists), `RECOVERED_EXPRESSIONS.md` |
+
+## Status (2026-10-11)
+- **The app exists** (`app/`): screens, linked charts, replay, live, reload, explain. Verified on a
+  synthetic day only. Keys: `MASSIVE_API_KEY`, `MASSIVE_S3_KEY_ID`, `MASSIVE_S3_SECRET` (env vars,
+  set by the user, never in chat or the repo). Data: `%LOCALAPPDATA%\tp-scanner` (`TP_SCANNER_DATA`
+  overrides; tests use it). Next: `tp-scan sync`, first live delayed session, fixtures baseline.
+- Verifying the app without a screen: launch with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=
+  --remote-debugging-port=9333` and read/screenshot the pages over CDP (works with the PC locked).
+- TradierPro link (click → TradierPro symbol) needs a TradierPro change: ask first.
 
 ## Status (2026-10-10)
 - Built: stage 2 primitives, stage 3 language + evaluator + explain, stage 4 instrumentation, the
