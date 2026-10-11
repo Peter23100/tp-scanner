@@ -7,6 +7,7 @@
 field chg_close_pct = (last - prev_close) / prev_close * 100         # TI Change from Close (%)
 field gap_pct = (open - prev_close) / prev_close * 100               # TI Gap (%)
 field chg_open_pct = (last - open) / open * 100                      # TI Change from Open (%)
+field chg_5m_pct = (last - close(1m, 5)) / close(1m, 5) * 100        # TI Change 5 Minute (%)
 field pos_in_range = (last - day_low) / (day_high - day_low) * 100   # TI Position in Range
 field pos_in_5m_range = (last - low(5m)) / (high(5m) - low(5m)) * 100 # TI Position in 5 Minute Range
 field range_5m_pct = (high(5m) - low(5m)) / last * 100               # TI 5 Minute Range (%)
@@ -26,3 +27,30 @@ condition tradeable = last >= 2 and last <= 500
 
 condition crossed_above_vwap = last >= vwap and low(1m, 1) < vwap and high(1m, 2) < vwap
 condition crossed_below_vwap = last <= vwap and high(1m, 1) > vwap and low(1m, 2) > vwap
+
+# --- Relative volume RIGHT NOW (master §2 "fix available") ---------------------------------------
+
+# The last 30 minutes' volume against what this stock normally trades in that same half hour:
+# 3 means three times its normal pace now. Unlike RVOL20DAYTIMEADJUSTED (cumulative), a quiet
+# morning can't dilute a 2pm explosion (AMBA, CMG, CRM, WDAY, PYPL). The expectation is the curve's
+# rise over the window, RVOL_CURVE now minus RVOL_CURVE 30 minutes ago, which is exact across the
+# curve's segment boundaries (the master's `slope x 30` isn't, near the open). Known only
+# 10:00-16:00: windows include extended hours, and before 10:00 the half hour reaches into the
+# premarket, which the curve doesn't model (the `if` makes the divisor 0, so it reads unknown).
+field RVOL_NOW = volume(30m) / (adv * (RVOL_CURVE - RVOL_CURVE_30AGO) * if(time >= 10:00 and time <= 16:00, 1, 0))
+
+# RVOL_CURVE evaluated 30 minutes earlier: the same points, with `time - 30` for `time`.
+field RVOL_CURVE_30AGO = if(time - 30 <= 9:30, 0.01,
+                         if(time - 30 <= 9:32, 0.01 + 0.012 * (time - 30 - 9:30) / 2,
+                         if(time - 30 <= 9:35, 0.022 + 0.018 * (time - 30 - 9:32) / 3,
+                         if(time - 30 <= 9:40, 0.04 + 0.03 * (time - 30 - 9:35) / 5,
+                         if(time - 30 <= 9:45, 0.07 + 0.025 * (time - 30 - 9:40) / 5,
+                         if(time - 30 <= 9:50, 0.095 + 0.02 * (time - 30 - 9:45) / 5,
+                         if(time - 30 <= 9:55, 0.115 + 0.018 * (time - 30 - 9:50) / 5,
+                         if(time - 30 <= 10:00, 0.133 + 0.017 * (time - 30 - 9:55) / 5,
+                         if(time - 30 <= 10:30, 0.15 + 0.09 * (time - 30 - 10:00) / 30,
+                         if(time - 30 <= 11:30, 0.24 + 0.13 * (time - 30 - 10:30) / 60,
+                         if(time - 30 <= 13:00, 0.37 + 0.16 * (time - 30 - 11:30) / 90,
+                         if(time - 30 <= 14:30, 0.53 + 0.17 * (time - 30 - 13:00) / 90,
+                         if(time - 30 <= 15:30, 0.7 + 0.15 * (time - 30 - 14:30) / 60,
+                         if(time - 30 <= 16:00, 0.85 + 0.15 * (time - 30 - 15:30) / 30, 1.00))))))))))))))
