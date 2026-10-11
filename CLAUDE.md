@@ -68,13 +68,18 @@ When the user supplies a newer master file, diff it against `spec/primus/`, repl
 | `filters/` | the live filter set; `LANGUAGE.md` reference, `CHANGES.md` log, `README.md` translation notes |
 | `examples/recipes.scan` | cookbook filters; compiled by tests, never loaded to run |
 | `spec/primus/` | the user's master, verbatim, plus the four screen PNGs |
+| `spec/port/` | `PORT_CONTRACT.md` (what to build), `filters.json` (per-filter port decisions: as_is / corrected / skip), `fixtures.json` (the REAL-session regression set: run it once data exists), `RECOVERED_EXPRESSIONS.md` |
 
-## Status (2026-10-09)
+## Status (2026-10-10)
 - Built: stage 2 primitives, stage 3 language + evaluator + explain, stage 4 instrumentation, the
-  replay CLI. 42 Primus filters + 21 fields translated; current to the master's 2026-09-25 version.
-- **Waiting on the user (verbatim expressions):** the 14 Contras, Breakout_Hold_Up/Down,
-  PM_LowFloat_Coil_Up, plain Halted, CatchALL_LF_HOD; the RVOL / PM_RVOL IF chains (curves were
-  rebuilt from a table).
+  replay CLI, load-time checks (contradictory bounds, float units). 61 filters + 21 fields
+  translated (master 2026-09-25 + RECOVERED_EXPRESSIONS). RVOL curves piecewise linear; `RVOL_NOW`.
+- **Waiting on the user (Primus editor):** Contra_Long_All / Contra_Short_All, the unnamed
+  short-side divergence filter, plain Halted, CatchALL_LF_HOD; the verbatim RVOL IF chain (check
+  the 09:31 value); Contra_Long's unmatched `)`.
+- **Port corrections** (spec/port/filters.json `corrected` / `skip`) are applied ONE AT A TIME
+  after a data baseline exists, each with its before/after on the fixtures; only the three the
+  loader forces are in (CHANGES.md).
 - **Waiting on a decision:** the display (Primus screens): technology undecided.
 - **Waiting on data:** Massive Stocks Starter ($29/mo) is enough for development (history, flat
   files, delayed WebSocket); real-time ($199) only for live alerting. Open: are flat files

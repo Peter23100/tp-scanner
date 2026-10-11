@@ -1,7 +1,8 @@
 # Filters
 
-The Primus filters, hand-translated from `spec/primus/Primus_Filters_MASTER_2026-09-25.md` into the
-scanner's language. **`LANGUAGE.md` is the reference for writing and changing filters**: every
+The Primus filters, hand-translated from `spec/primus/Primus_Filters_MASTER_2026-09-25.md` and
+`spec/port/RECOVERED_EXPRESSIONS.md` (the verbatim Contra, Breakout_Hold and PM_LowFloat_Coil_Up
+expressions the master only described) into the scanner's language. **`LANGUAGE.md` is the reference for writing and changing filters**: every
 building block, Primus and Trade Ideas equivalents, and a cookbook. `CHANGES.md` records every
 filter change and why.
 
@@ -9,10 +10,11 @@ filter change and why.
 |---|---|---|
 | `fields.scan` | the 21 custom fields (§2), plus a few named helpers the filters repeat | 21 + 10 |
 | `left.scan` | sharp-move family (§4.1–§4.10) | 10 |
-| `right.scan` | hold and breakout families (§4.11–§4.24) | 14 |
+| `right.scan` | hold and breakout families (§4.11–§4.26) | 16 |
 | `top.scan` | flushes and reversals (§4.27–§4.32) | 6 |
-| `statics.scan` | movers, PM coils, imbalances, halts, NYSE IND (§5) | 12 |
-| `common.scan` | shared fields and conditions for new filters (Trade Ideas-style measures, `tradeable`, VWAP crosses); not used by the translations | 9 + 3 |
+| `statics.scan` | movers, PM coils, imbalances, halts, NYSE IND (§5) | 13 |
+| `contra.scan` | the Contra group (§4C): A/B/C generation and V generation | 16 + 2 fields |
+| `common.scan` | shared fields and conditions for new filters (Trade Ideas-style measures, `RVOL_NOW`, `tradeable`, VWAP crosses); not used by the translations | 12 + 3 |
 
 `cargo test -p tp-scan-engine --test primus_filters` parses and compiles all of them and runs
 scenario checks (a ramp fires M_Spike_Up; a ramp that holds fires M_Spike_Hold_Up; one that
@@ -23,23 +25,23 @@ Check the files without data: `cargo run -p tp-scan-cli -- check filters`.
 ## Not translated yet: needs the verbatim expression
 
 A transcription from prose is exactly the invisible-threshold risk the export exists to avoid, so
-these wait for the pasted expression:
+these wait for the expression from the Primus editor:
 
-- **Contra group (14)**: §4C describes them but quotes none. Contra_Short_A_FAST, B_Extended,
-  C_Breakdown, Contra_Cap_A_Fast, B_Extended, Contra_Reclaim_C, Contra Long/Short V5, V8,
-  Parabolic, All, the bare Long/Short, Momo VWAP Divergence Long, Contra Long VWAP Divergence, and
-  the unnamed short-side divergence filter.
-- **Breakout_Hold_Up / _Down** (§4.25): prose only.
-- **PM_LowFloat_Coil_Up** (§5.6): prose only.
+- **Contra_Long_All / Contra_Short_All**: six-branch ORs, analysed in §4C, not recovered.
+- **The unnamed short-side divergence filter**: §4C quotes one clause of it (the hand-rolled
+  rolling volume window), nothing more.
 - **Halted** (plain): never collected.
-- **CatchALL_LF_HOD**: on the right screen in the screenshot, not in the master.
+- **CatchALL_LF_HOD**: on the right screen in the screenshot, not in any file.
 
-## Three things were reconstructed and need checking
+## Reconstructed: needs checking against Primus
 
-- `RVOL_CURVE` (inside RVOL20DAYTIMEADJUSTED) is built from the §2 table. The step form, where each
-  value holds up to and including its time, follows the `<= 570` branch the master quotes, but the
-  other 13 branches weren't pasted.
-- `PM_CURVE` (inside PM_RVOL) is built from the §2 prose.
+- `RVOL_CURVE` (inside RVOL20DAYTIMEADJUSTED) is the §2 table's 14 points, **linear between them**
+  (each Primus IF branch is a ramp, per `spec/port/filters.json`; the master's 0.92 at 15:44 agrees).
+  The verbatim IF chain was never pasted, and filters.json's "0.011 at 09:31" doesn't fit a straight
+  line from the table (0.016): check the first segment.
+- `PM_CURVE` (inside PM_RVOL): the §2 prose's 8 points, linear between them, flat 0.03 before 5:00.
+- **Contra_Long**: the recovered text has an unmatched `)` after `NewMinuteLow(5, NO)`; translated as
+  a plain AND chain.
 - The M6_Bounce_Short constants that §4.18 doesn't state (day move 0.97, 30-minute 1.03, VWAP cap
   0.96) are mirrored from M5, and the Quiet_Reversal_Down RSI of 30 is mirrored from the up
   side's 70.
@@ -75,6 +77,9 @@ Structure ports mechanically, and the rules below are applied uniformly.
 | `NewMinuteHigh(15, NO)` | `new_high(15m)` |
 | `MaxTriggersCount(MINUTES, 5, 1)` | `cooldown 5m` |
 | `IsHalt` | `halted` |
+| `MinuteOpen_I` / `MinuteClose_I(..., N, Pk, ...)` | `open(Nm, k)` / `close(Nm, k)` |
+| `RSIStock`, `SMAStock`, `BollingerBands(..., LowerBand, V2)` | `rsi(5m, 14)`, `sma(5m, 20)`, `bb_lower(5m, 20, 2)` |
+| `LAST>5`, `Last >5` | `last > 5` |
 | `ImbalanceBuyVolume(NYSE)` | `imb_buy(nyse)` |
 | `IndBid`, `ClearPricePrimary`, `NearPricePrimary` | `ind_bid`, `clear_price`, `near_price` |
 | the `NO` extended-hours flag on a trigger | `hours rth` (the default) |
@@ -115,7 +120,9 @@ re-derive thresholds under these semantics.
 
 ## Not applied: the fix queue (§7)
 
-Only the items above that the engine fixes by construction, plus item 18 (the split-immune volume
+Only the items above that the engine fixes by construction, the three corrections forced by the
+loader (two dead Contra divergence filters and PM_LowFloat_Coil_Up's float units; see `CHANGES.md`),
+plus item 18 (the split-immune volume
 leg), which arrived in the master itself as the 2026-09-25 LowFloat_HOD_Break_Up rebuild. Everything
 else in §7 (Movers 0.75% →
 2%, `TickTime` gates on Open_Flush and PM_Coil, the Breakout_Hold gap leg, propagating the VWAP cap

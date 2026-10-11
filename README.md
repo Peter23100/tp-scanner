@@ -67,10 +67,14 @@ No market-data subscription yet; everything runs on fixtures and synthetic data.
   trading-hours gating, display columns. The scan loop (a bad symbol never stops the scan),
   stage-4 instrumentation (every evaluation's measurement vector as JSONL), and the `tp-scan`
   replay CLI.
-- **Translated:** 42 Primus filters and all 21 custom fields (`filters/`), compiled and
-  scenario-tested, current to the master's 2026-09-25 version. Waiting on verbatim expressions: the 14 Contras, Breakout_Hold,
-  PM_LowFloat_Coil_Up, plain Halted, CatchALL_LF_HOD. The RVOL / PM_RVOL curves were rebuilt from
-  the master's table and prose and need checking against the pasted IF chains.
+- **Translated:** 61 Primus filters and all 21 custom fields (`filters/`), compiled and
+  scenario-tested: the master's 2026-09-25 version plus the recovered Contra, Breakout_Hold and
+  PM_LowFloat_Coil_Up expressions (`spec/port/`). Still needed from the Primus editor:
+  Contra_Long_All / Contra_Short_All, the unnamed short-side divergence filter, plain Halted,
+  CatchALL_LF_HOD. The RVOL / PM_RVOL curves are piecewise linear between the master's points;
+  the verbatim IF chain would confirm the first segment.
+- **Load-time checks:** bounds no value can meet, `=` on a price, and float in the wrong units are
+  refused with the line (the defects that kept three Primus filters silent).
 - **Measured** (`cargo run --release -p tp-scan-engine --example throughput [-- filters]`): 5,000
   symbols × the 42 translated filters is one full-market cycle in ~28 ms on one thread, ~3% of a
   core at 1 Hz (40 synthetic filters: ~12 ms). Synthetic minute bars; not yet measured on real data.

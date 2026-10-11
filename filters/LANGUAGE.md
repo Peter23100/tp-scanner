@@ -147,7 +147,7 @@ works when RVOL is unknown.
 Relative volume is not a builtin: it's your own field, `RVOL20DAYTIMEADJUSTED` in `fields.scan`
 (Primus's definition, time-of-day curve included). Use it like any number.
 
-### 4.4 Windows: high, low and volume over a stretch of time
+### 4.4 Windows: high, low, open, close and volume over a stretch of time
 
 ```
 high(5m)            the last 5 minutes, rolling (at 10:07: 10:02–10:07)
@@ -157,7 +157,10 @@ high(30m, clock)    the clock-aligned half hour in progress (10:00–10:07 at 10
 high(30m, clock, 1) the previous clock half hour (09:30–10:00)
 ```
 
-Same shapes for `low(...)` and `volume(...)`. Spans can be seconds (`30s`), minutes or hours. The
+Same shapes for `low(...)`, `volume(...)`, `open(...)` and `close(...)`. `open(5m)` is the first
+price in the window and `close(5m)` the last, so `close(5m, 1) < open(5m, 1)` is "the five minutes
+before the last five were red", and `close(1m, 5)` is the price five minutes ago. (Bare `open`,
+without brackets, is still today's 09:30 open.) Spans can be seconds (`30s`), minutes or hours. The
 span plus the back-offset must fit in **4 hours** of history. Seconds-level windows need 1-second
 data (live feed, or replay with `--seconds`).
 
@@ -172,6 +175,8 @@ Windows include extended hours: `volume(120m)` at 10:00 reaches into the premark
 | `high(5m)`, `low(5m)` | `MinuteHigh(..., 5, CURRENT, ...)` | (5 Minute Range uses them) |
 | `high(5m, 1)` | `MinuteHigh(..., 5, P1, ...)` | |
 | `volume(5m)` | `MinuteVolume(..., 5, CURRENT, ...)` | Volume 5 Minute |
+| `open(5m, 1)`, `close(5m, 1)` | `MinuteOpen_I` / `MinuteClose_I(..., 5, P1, ...)` | (candle colour) |
+| `close(1m, 5)` | | (the price behind Change 5 Minute) |
 
 ### 4.5 Indicators on 5-minute candles
 
@@ -224,18 +229,20 @@ From `fields.scan`: `RVOL20DAYTIMEADJUSTED`, `PM_RVOL`, `VolROC3`, `VolROC_1m_3`
 `VolFade_1m_Smooth`, `Spike_Vol_Pct`, `ATR_POS`, `ATR_NEG`, `Spike_Range_Pct`, `PM_RangePos`,
 `VWAP_Stretch`, `Retrace_Pct_Up/Down`, `Retrace_1m_Up/Down`, `RNK_UP`, `RNK_DWN`, `Clear_ATR`,
 `Near_ATR`, `Imb_Buy_Ratio`, `Imb_Sell_Ratio`; helpers `up5 up15 up30 dn5 dn15 dn30`, `day_range`,
-`spike_range`; condition `volatile` (ATR ≥ 3% of price).
+`spike_range`; condition `volatile` (ATR ≥ 3% of price). From `contra.scan`: `CONTRA_RVOL` (the Contras'
+own linear-day RVOL) and `BURST_120` (five-minute pace against the last two hours).
 
 `common.scan` adds Trade Ideas-style fields: `chg_close_pct`, `gap_pct`,
 `chg_open_pct`, `pos_in_range`, `pos_in_5m_range`, `chg_5m_pct`, `range_5m_pct`, `vwap_dist_pct`,
-`float_rotation`, `pos_in_bb`, and the conditions `tradeable`, `crossed_above_vwap`,
-`crossed_below_vwap`.
+`float_rotation`, `pos_in_bb`, **`RVOL_NOW`** (the last half hour's volume against this stock's
+normal pace for that half hour; a quiet morning can't dilute it; known 10:00–16:00), and the
+conditions `tradeable`, `crossed_above_vwap`, `crossed_below_vwap`.
 
 ## 5. Units: the mistakes that silently break a filter
 
 | | correct | wrong |
 |---|---|---|
-| float | `float <= 20_000_000` (shares) | `float <= 20` (Primus millions: matches nothing) |
+| float | `float <= 20_000_000` (shares) | `float <= 20` (Primus millions: matches nothing). **Refused when the filters load**, as is a float so large it filters nothing |
 | percent | `(last - prev_close) / prev_close >= 0.10` (fraction: 0.10 = 10%) | `>= 10` (means +1000%) |
 | time | `time >= 9:45` | `time >= 945` (minutes since midnight: 15:45) |
 | price band | `max(0.50, last * 0.02)` (dollar AND percent floor) | a bare `0.50` (huge on a $2 stock, nothing on a $500 one) |
@@ -266,7 +273,7 @@ are illustrative.**
 | Change from Open (%) | `field chg_open_pct = (last - open) / open * 100` |
 | Position in Range (today, %) | `field pos_in_range = (last - day_low) / (day_high - day_low) * 100` |
 | Position in 5 Minute Range | `field pos_in_5m_range = (last - low(5m)) / (high(5m) - low(5m)) * 100` |
-| Change 5 Minute (%) | not exact yet (§8: no "price N minutes ago"). Closest today: `up5 / last * 100` (up from the 5-minute low) and `dn5 / last * 100` (down from the 5-minute high) |
+| Change 5 Minute (%) | `field chg_5m_pct = (last - close(1m, 5)) / close(1m, 5) * 100` |
 | 5 Minute Range (%) | `field range_5m_pct = (high(5m) - low(5m)) / last * 100` |
 | Distance from VWAP (%) | `field vwap_dist_pct = (last - vwap) / vwap * 100` |
 | Relative Volume | `RVOL20DAYTIMEADJUSTED` (yours) |
@@ -409,6 +416,11 @@ lists every filter with its settings, or names the exact line and column of a mi
 filters/right.scan:241:16: `last_price` is not defined (and isn't a builtin)
 ```
 
+It also refuses, with the line, the mistakes that made Primus filters run "healthy" while never
+firing: bounds on the same quantity that no value can meet
+(`last - vwap <= -0.75 and last - vwap >= 0.75`: "did you mean `or`?"), `=` on a price, and a
+float in the wrong units.
+
 Once there is market data, `replay` runs a day through the filters, and
 `--explain FILTER:SYMBOL` shows every clause with its value: which one blocked it, and by how much.
 That answers "why didn't it catch X", the #2 complaint about Primus.
@@ -420,7 +432,6 @@ focused piece of work, not a language change.
 
 | missing | Trade Ideas | needs |
 |---|---|---|
-| price N minutes ago (`close(5m)`) | Change 5/10/15/30 Minute (exact) | a builtin (small) |
 | candles other than 5-minute | 1/2/15/60 min EMA, RSI, ... | keeping more candle series (small) |
 | consecutive green/red candles | Consecutive Candles | a counting builtin (small) |
 | multi-day highs/lows (5-day, 52-week) | Position in 5 Day / 52 Week Range | more daily history fields (small) |
