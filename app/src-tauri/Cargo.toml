@@ -1,0 +1,29 @@
+[package]
+name = "tp-scanner-app"
+description = "The scanner's desktop app: Primus-style screens, linked charts"
+edition = "2021"
+version = "0.1.0"
+publish = false
+
+[[bin]]
+name = "tp-scanner"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tp-marketdata = { path = "../../crates/tp-marketdata" }
+tp-scan-engine = { path = "../../crates/tp-scan-engine" }
+tp-massive = { path = "../../crates/tp-massive" }
+tauri = { version = "2", features = ["devtools"] }
+tauri-plugin-window-state = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+flate2 = "1"
+
+# Its own workspace: tauri-build's linker settings (static CRT) must not leak into the engine
+# crates' test builds, which they do when everything builds in one workspace.
+[workspace]

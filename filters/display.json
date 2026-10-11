@@ -1,0 +1,150 @@
+{
+  "screens": [
+    {
+      "name": "left",
+      "title": "Sharp moves",
+      "rows": [
+        {
+          "height": 1,
+          "columns": [
+            { "width": 1, "items": [
+              { "filters": ["M_Pop_Sensitive_Up"], "link": "green" },
+              { "filters": ["M_Pop_Medium_EXT_Up"], "link": "green" }
+            ] },
+            { "width": 1, "items": [
+              { "filters": ["M_Drive_Up"], "link": "green" },
+              { "filters": ["High_ATR_Pop"], "link": "green" },
+              { "filters": ["M_Spike_Up"], "link": "green" }
+            ] },
+            { "width": 1, "items": [
+              { "filters": ["M_Drive_Down"], "link": "red" },
+              { "filters": ["High_ATR_Drop"], "link": "red" },
+              { "filters": ["M_Spike_Down"], "link": "red" }
+            ] },
+            { "width": 2.5, "items": [
+              { "chart": "green" },
+              { "chart": "red" }
+            ] },
+            { "width": 1, "items": [
+              { "filters": ["M_Drop_Sensitive_Down"], "link": "red" },
+              { "filters": ["M_Drop_Medium_EXT_Down"], "link": "red" }
+            ] }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "right",
+      "title": "Hold and breakout",
+      "rows": [
+        {
+          "height": 3,
+          "columns": [
+            { "width": 1, "items": [
+              { "filters": ["Breakout_Hold_Up"], "link": "green" },
+              { "filters": ["Base_Break_Hold_Up"], "link": "green" },
+              { "filters": ["M_Spike_Hold_Up"], "link": "green" },
+              { "filters": ["M_Spike_Hold_Down"], "link": "red" }
+            ] },
+            { "width": 3, "items": [
+              { "chart": "green" },
+              { "chart": "orange" }
+            ] },
+            { "width": 1, "items": [
+              { "filters": ["Breakout_Hold_Down"], "link": "red" },
+              { "filters": ["Base_Break_Hold_Down"], "link": "red" }
+            ] },
+            { "width": 1, "items": [
+              { "filters": ["LowFloat_HOD_Break_Up"], "link": "yellow" },
+              { "filters": ["HOD_Base_Break_LQ"], "link": "yellow" }
+            ] },
+            { "width": 3, "items": [
+              { "chart": "yellow" },
+              { "chart": "red" }
+            ] }
+          ]
+        },
+        {
+          "height": 1,
+          "columns": [
+            { "width": 1, "items": [{ "filters": ["M_Run_Hold_Up"], "link": "orange" }] },
+            { "width": 1, "items": [{ "filters": ["M_Run_Hold_Down"], "link": "red" }] },
+            { "width": 1, "items": [{ "filters": ["M3_Breakout_Long"], "link": "orange" }] },
+            { "width": 1, "items": [{ "filters": ["M5_Pullback_Long"], "link": "orange" }] },
+            { "width": 1, "items": [{ "filters": ["M7_GrindUp"], "link": "orange" }] },
+            { "width": 1, "items": [{ "filters": ["M4_Breakdown_Short"], "link": "red" }] },
+            { "width": 1, "items": [{ "filters": ["M6_Bounce_Short"], "link": "red" }] },
+            { "width": 1, "items": [{ "filters": ["M8_GrindDown"], "link": "red" }] }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "top",
+      "title": "Flush and reversal",
+      "rows": [
+        {
+          "height": 1,
+          "columns": [
+            { "width": 1, "items": [
+              { "filters": ["M_Open_Flush_Up"], "link": "purple" },
+              { "filters": ["Blowoff_Reversal_Up"], "link": "purple" },
+              { "filters": ["Quite_Reversal_Up"], "link": "purple" },
+              { "filters": ["Blowoff_Reversal_Down"], "link": "yellow" },
+              { "filters": ["Quiet_Reversal_Down"], "link": "yellow" },
+              { "filters": ["M_OpenFlush_Down"], "link": "yellow" }
+            ] },
+            { "width": 2.5, "items": [
+              { "chart": "purple" },
+              { "chart": "yellow" }
+            ] }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "fourth",
+      "title": "Contras and statics",
+      "rows": [
+        {
+          "height": 1,
+          "columns": [
+            { "width": 1.3, "items": [
+              { "title": "Contra Short A/B/C", "filters": ["Contra_Short_A_FAST", "Contra_Short_B_Extended", "Contra_Short_C_Breakdown"], "link": "pink" },
+              { "title": "Contra Short V", "filters": ["Contra_Short", "Contra_Short_V5", "Contra_Short_V8", "Contra_Short_Parabolic"], "link": "pink" },
+              { "title": "Contra Long A/B/C", "filters": ["Contra_Cap_A_Fast", "Contra_Cap_B_Extended", "Contra_Reclaim_C"], "link": "cyan" },
+              { "title": "Contra Long V", "filters": ["Contra_Long", "Contra_Long_V5", "Contra_Long_V8", "Contra_Long_Parabolic", "Contra_Long_VWAP_Divergence", "Momo_VWAP_Divergence_Long"], "link": "cyan" }
+            ] },
+            { "width": 2, "items": [
+              { "chart": "pink" },
+              { "chart": "cyan" },
+              { "chart": "blue" },
+              { "chart": "orange" }
+            ] },
+            { "width": 1.2, "items": [
+              { "filters": ["Imbalance_Nasdaq_Buy"], "link": "blue" },
+              { "filters": ["Imbalance_Nasdaq_Sell"], "link": "blue" },
+              { "filters": ["Imbalance_NYSE_Buy"], "link": "blue" },
+              { "filters": ["Imbalance_NYSE_Sell"], "link": "blue" }
+            ] },
+            { "width": 1, "items": [
+              { "filters": ["Halted_Static_New_Minute"], "link": "blue" },
+              { "filters": ["NYSE_IND_UP"], "link": "blue" },
+              { "filters": ["NYSE_IND_DOWN"], "link": "blue" }
+            ] },
+            { "width": 1.3, "items": [
+              { "filters": ["Movers_Up_Alist"], "link": "blue", "height": 2 },
+              { "filters": ["PM_Coil_Up"], "link": "orange" },
+              { "filters": ["PM_LowFloat_Coil_Up"], "link": "orange" }
+            ] },
+            { "width": 1.3, "items": [
+              { "filters": ["Movers_Down_Alist"], "link": "blue", "height": 2 },
+              { "filters": ["PM_Coil_Down"], "link": "orange" },
+              { "filters": ["LowFloat_Movers_List"], "link": "blue" }
+            ] }
+          ]
+        }
+      ]
+    }
+  ]
+}
