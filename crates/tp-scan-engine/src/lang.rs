@@ -62,6 +62,8 @@ pub const CALLS: &[(&str, &str)] = &[
     ("high", "high(5m) | high(5m, 1) | high(30m, clock) | high(30m, clock, 1)"),
     ("low", "low(<window>)"),
     ("volume", "volume(<window>)"),
+    ("open", "open(<window>): the window's first price; bare `open` is today's 09:30 open"),
+    ("close", "close(<window>): the window's last price"),
     ("ema", "ema(5m, 20)"),
     ("sma", "sma(5m, 20)"),
     ("rsi", "rsi(5m, 14)"),
@@ -624,8 +626,15 @@ impl Typer<'_> {
 
     fn cond(&self, n: &Node) -> Result<Cond, LangError> {
         match &n.e {
-            E::Cmp(op, a, b) => Ok(Cond::Cmp(Box::new(self.num(a)?), *op, Box::new(self.num(b)?))),
-            E::And(parts) => Ok(Cond::All(parts.iter().map(|p| self.cond(p)).collect::<Result<_, _>>()?)),
+            E::Cmp(op, a, b) => {
+                let (a, b) = (self.num(a)?, self.num(b)?);
+                self.check_float_units(n.pos, &a, &b)?;
+                Ok(Cond::Cmp(Box::new(a), *op, Box::new(b)))
+            }
+            E::And(parts) => {
+                self.check_satisfiable(parts)?;
+                Ok(Cond::All(parts.iter().map(|p| self.cond(p)).collect::<Result<_, _>>()?))
+            }
             E::Or(parts) => Ok(Cond::Any(parts.iter().map(|p| self.cond(p)).collect::<Result<_, _>>()?)),
             E::Not(a) => Ok(Cond::not(self.cond(a)?)),
             E::Name(s) if s == "halted" => Ok(Cond::Event(Event::Halted)),
@@ -639,6 +648,88 @@ impl Typer<'_> {
             }
             _ => self.err(n.pos, format!("expected a condition, found {}; compare it with something", Self::describe(n))),
         }
+    }
+
+    /// `float` is in shares. Primus wrote it in millions (`FloatShares <= 20`), and its
+    /// `Float <= 10000000` meant ten trillion shares and filtered nothing for months
+    /// (PM_LowFloat_Coil_Up). Both mistakes are refused here.
+    fn check_float_units(&self, pos: Pos, a: &Num, b: &Num) -> Result<(), LangError> {
+        let c = match (a, b) {
+            (Num::M(Measure::Float), x) | (x, Num::M(Measure::Float)) => match const_value(x) {
+                Some(c) => c,
+                None => return Ok(()),
+            },
+            _ => return Ok(()),
+        };
+        if c < 10_000.0 {
+            return self.err(pos, format!("`float` is in shares: {c} means {c} shares. For Primus's millions write e.g. 20_000_000"));
+        }
+        if c >= 100_000_000_000.0 {
+            return self.err(pos, format!("`float` against {c} shares restricts nothing (more than any float). Was this Primus millions written as shares?"));
+        }
+        Ok(())
+    }
+
+    /// Bounds on the same quantity, ANDed together, that no value can meet: the Momo VWAP
+    /// Divergence defect (`Last - VWAP <= -0.75 AND Last - VWAP >= 0.75`), which ran "healthy" and
+    /// never fired. Only constant bounds directly inside one `and` (brackets flattened) are seen.
+    fn check_satisfiable(&self, parts: &[Node]) -> Result<(), LangError> {
+        fn flatten<'n>(parts: &'n [Node], out: &mut Vec<&'n Node>) {
+            for p in parts {
+                match &p.e {
+                    E::And(inner) => flatten(inner, out),
+                    _ => out.push(p),
+                }
+            }
+        }
+        /// (bound, strict, where)
+        type Bound = Option<(f64, bool, Pos)>;
+        let mut flat = vec![];
+        flatten(parts, &mut flat);
+        let mut seen: HashMap<String, (Bound, Bound)> = HashMap::new();
+        for p in flat {
+            let E::Cmp(op, a, b) = &p.e else { continue };
+            let (Ok(a), Ok(b)) = (self.num(a), self.num(b)) else { continue };
+            let (q, op, c) = match (const_value(&a), const_value(&b)) {
+                (None, Some(c)) => (a, *op, c),
+                (Some(c), None) => (b, op.flip(), c),
+                _ => continue,
+            };
+            let key = q.to_string();
+            let e = seen.entry(key.clone()).or_insert((None, None));
+            let tighter = |cur: Bound, upper: bool, strict: bool| {
+                cur.is_none_or(|(x, s, _)| if upper { c < x } else { c > x } || (c == x && strict && !s))
+            };
+            match op {
+                CmpOp::Ge | CmpOp::Gt => {
+                    let strict = op == CmpOp::Gt;
+                    if tighter(e.0, false, strict) {
+                        e.0 = Some((c, strict, p.pos));
+                    }
+                }
+                CmpOp::Le | CmpOp::Lt => {
+                    let strict = op == CmpOp::Lt;
+                    if tighter(e.1, true, strict) {
+                        e.1 = Some((c, strict, p.pos));
+                    }
+                }
+            }
+            if let (Some((lo, ls, lp)), Some((hi, hs, hp))) = (e.0, e.1) {
+                if lo > hi || (lo == hi && (ls || hs)) {
+                    let (first, second) = if lp.line <= hp.line { (lp, hp) } else { (hp, lp) };
+                    return self.err(
+                        second,
+                        format!(
+                            "this can never be true: `{key}` must be {} {lo} and {} {hi} (line {}), so the filter could never fire. Did you mean `or`, or is one bound's sign wrong?",
+                            if ls { ">" } else { ">=" },
+                            if hs { "<" } else { "<=" },
+                            first.line
+                        ),
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     fn arity(&self, n: &Node, f: &str, args: &[Node], want: usize) -> Result<(), LangError> {
@@ -709,6 +800,8 @@ impl Typer<'_> {
             "high" => Ok(Num::M(Measure::High(self.window(n, f, args)?))),
             "low" => Ok(Num::M(Measure::Low(self.window(n, f, args)?))),
             "volume" => Ok(Num::M(Measure::Volume(self.window(n, f, args)?))),
+            "open" => Ok(Num::M(Measure::Open(self.window(n, f, args)?))),
+            "close" => Ok(Num::M(Measure::Close(self.window(n, f, args)?))),
             "ema" | "sma" | "rsi" => {
                 self.arity(n, f, args, 2)?;
                 let tf = self.candle_tf(&args[0])?;
@@ -763,6 +856,15 @@ impl Typer<'_> {
             "new_high" | "new_low" => self.err(n.pos, format!("`{f}` is a condition, not a number")),
             _ => self.err(n.pos, format!("`{f}` is not a function")),
         }
+    }
+}
+
+/// A number known when the program loads: a literal, or a negated one.
+fn const_value(n: &Num) -> Option<f64> {
+    match n {
+        Num::Const(c) => Some(*c),
+        Num::Neg(x) => const_value(x).map(|c| -c),
+        _ => None,
     }
 }
 
@@ -983,6 +1085,25 @@ mod tests {
         assert!(error("trigger t { when last > 5x }").contains("runs into a word"));
         assert!(error("trigger t { when time > 9:3 }").contains("not a time of day"));
         assert!(error("trigger t { when last > 2\nfield X = 1 }").contains("starts a new item"));
+    }
+
+    #[test]
+    fn load_time_checks_refuse_filters_that_cannot_work() {
+        // Momo VWAP Divergence: both bounds on one quantity, ANDed.
+        let e = error("trigger t {\n when last - vwap <= -0.75\n  and last / vwap <= 0.97\n  and last - vwap >= 0.75 }");
+        assert!(e.contains("<input>:4:") && e.contains("can never be true") && e.contains("(line 2)"), "{e}");
+        // Brackets are flattened; a constant on the left is flipped; strictness counts.
+        assert!(error("trigger t { when (last > 5 and day_volume > 1) and 5 > last }").contains("can never be true"));
+        assert!(error("trigger t { when last >= 5 and last < 5 }").contains("can never be true"));
+        // ... but touching inclusive bounds, OR, and different quantities are fine.
+        parse("trigger t { when last >= 5 and last <= 5 }").unwrap();
+        parse("trigger t { when last - vwap <= -0.75 or last - vwap >= 0.75 }").unwrap();
+        parse("trigger t { when last - vwap <= -0.75 and last - vwap_ext >= 0.75 }").unwrap();
+        // Float is in shares.
+        assert!(error("trigger t { when float <= 20 }").contains("in shares"));
+        assert!(error("trigger t { when float <= 10_000_000_000_000 }").contains("restricts nothing"));
+        assert!(error("trigger t { when 10 >= float }").contains("in shares"));
+        parse("trigger t { when float <= 20_000_000 }").unwrap();
     }
 
     #[test]

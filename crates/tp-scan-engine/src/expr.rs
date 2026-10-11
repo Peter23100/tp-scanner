@@ -56,6 +56,16 @@ pub enum CmpOp {
 }
 
 impl CmpOp {
+    /// The same comparison with its sides swapped: `5 > x` is `x < 5`.
+    pub fn flip(self) -> CmpOp {
+        match self {
+            CmpOp::Lt => CmpOp::Gt,
+            CmpOp::Le => CmpOp::Ge,
+            CmpOp::Gt => CmpOp::Lt,
+            CmpOp::Ge => CmpOp::Le,
+        }
+    }
+
     pub fn symbol(self) -> &'static str {
         match self {
             CmpOp::Lt => "<",

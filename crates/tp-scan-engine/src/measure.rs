@@ -48,6 +48,10 @@ pub enum Measure {
     Low(Win),
     /// Volume in the window (0 if covered but quiet).
     Volume(Win),
+    /// Open of the window's first bar (Primus `MinuteOpen_I(..., N, Pk, ...)`).
+    Open(Win),
+    /// Close of the window's last bar (Primus `MinuteClose_I(..., N, Pk, ...)`).
+    Close(Win),
     /// RTH high so far today, including the newest bar. Unknown before 09:30.
     DayHigh,
     /// RTH low so far today.
@@ -114,6 +118,8 @@ impl Measure {
             Measure::High(w) => s.window(w)?.high.map(|p| p.value()),
             Measure::Low(w) => s.window(w)?.low.map(|p| p.value()),
             Measure::Volume(w) => s.window(w).map(|a| a.volume),
+            Measure::Open(w) => s.window(w)?.open.map(|p| p.value()),
+            Measure::Close(w) => s.window(w)?.close.map(|p| p.value()),
             Measure::DayHigh => px(s.day_high()),
             Measure::DayLow => px(s.day_low()),
             Measure::PrevClose => s.daily_for_today().map(|d| d.prev_close.value()),
@@ -197,6 +203,8 @@ impl fmt::Display for Measure {
             Measure::High(w) => write!(f, "high({w})"),
             Measure::Low(w) => write!(f, "low({w})"),
             Measure::Volume(w) => write!(f, "volume({w})"),
+            Measure::Open(w) => write!(f, "open({w})"),
+            Measure::Close(w) => write!(f, "close({w})"),
             Measure::DayHigh => write!(f, "day_high"),
             Measure::DayLow => write!(f, "day_low"),
             Measure::PrevClose => write!(f, "prev_close"),
@@ -294,6 +302,10 @@ mod tests {
         assert_eq!(Measure::Last.eval(&s), Some(18.5));
         assert_eq!(Measure::High(Win::rolling_min(5)).eval(&s), Some(19.0));
         assert_eq!(Measure::Volume(Win::rolling_min_back(5, 1)).eval(&s), Some(1500.0));
+        // 10 bars 09:30..09:39, open = close = 9.5 + i: the last 5 minutes are bars 5..9.
+        assert_eq!(Measure::Open(Win::rolling_min(5)).eval(&s), Some(14.5));
+        assert_eq!(Measure::Close(Win::rolling_min(5)).eval(&s), Some(18.5));
+        assert_eq!(Measure::Close(Win::rolling_min_back(5, 1)).eval(&s), Some(13.5));
         assert_eq!(Measure::SessionOpen.eval(&s), Some(9.5));
         assert_eq!(Measure::DayHigh.eval(&s), Some(19.0));
         assert_eq!(Measure::DayLow.eval(&s), Some(9.0));

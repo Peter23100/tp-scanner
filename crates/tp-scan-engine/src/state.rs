@@ -138,11 +138,14 @@ impl fmt::Display for Win {
     }
 }
 
-/// What a window saw. `high`/`low` are `None` when it's covered but had no bars.
+/// What a window saw. Prices are `None` when it's covered but had no bars. `open` is the first
+/// bar's open and `close` the last bar's close (bar order is time order).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WindowAgg {
     pub high: Option<Price<Unadjusted>>,
     pub low: Option<Price<Unadjusted>>,
+    pub open: Option<Price<Unadjusted>>,
+    pub close: Option<Price<Unadjusted>>,
     pub volume: f64,
     pub bars: usize,
 }
@@ -682,7 +685,7 @@ impl SymbolState {
             return None;
         }
         let partial = (!use_fine && self.res == Some(Resolution::Second)).then(|| self.agg.current()).flatten();
-        let mut agg = WindowAgg { high: None, low: None, volume: 0.0, bars: 0 };
+        let mut agg = WindowAgg { high: None, low: None, open: None, close: None, volume: 0.0, bars: 0 };
         let rolling = w.align == Align::Rolling;
         for bar in ring.bars.iter().chain(partial) {
             let s = bar.start.millis();
@@ -690,6 +693,8 @@ impl SymbolState {
             if inside {
                 agg.high = Some(agg.high.map_or(bar.high, |h| h.max(bar.high)));
                 agg.low = Some(agg.low.map_or(bar.low, |l| l.min(bar.low)));
+                agg.open = agg.open.or(Some(bar.open));
+                agg.close = Some(bar.close);
                 agg.volume += bar.volume;
                 agg.bars += 1;
             }
