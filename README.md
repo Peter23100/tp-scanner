@@ -15,8 +15,9 @@ never holds broker credentials and never touches the order path.**
 | `crates/tp-scan-engine` | per-symbol state, measurement catalog, the filter language (`lang.rs`), evaluator (memo + explain), scan loop with triggers and ranked lists, JSONL instrumentation |
 | `crates/tp-scan-cli` | the `tp-scan` binary: `check` filter files, `replay` history, `sync` the Massive cache, `fetch-day`, `live` |
 | `crates/tp-massive` | Massive data: the live WebSocket source, REST (daily bars, splits, float, holidays, chart history), the daily cache, flat files |
-| `app/` | **the desktop app** (Tauri 2 + React): the Primus screens, linked charts. Its own Cargo workspace |
-| `filters/display.json` | which screens exist and which panels and charts each holds |
+| `app/` | **the desktop app** (Tauri 2 + React, TradierPro's look): a window per panel and chart, TradierPro's chart, the filter tools. Its own Cargo workspace |
+| `filters/display.json` | the Primus screens: the starting layout of the panel windows (after that, `panels.json` in the data dir) |
+| `filters/baskets.scan` | named baskets (created by the app's basket editor when you make the first) |
 | `ROADMAP.md` | the six-month plan to a full replacement and past it |
 | `filters/` | the Primus filters and custom fields, translated. `filters/README.md` has the translation rules, what's missing, and where results will differ from Primus on purpose |
 | `filters/LANGUAGE.md` | **how to write filters**: every building block, Primus and Trade Ideas equivalents, a cookbook |
@@ -69,14 +70,25 @@ npx tauri build --no-bundle       # -> app/src-tauri/target/release/tp-scanner.e
 npx tauri dev                     # or: run from source with hot reload
 ```
 
-The launcher bar opens the screens (`left`, `right`, `top`, `fourth`) and chart windows, and picks
-the source: **Live** (Massive WebSocket; delayed on Starter) or **Replay** of a past day (downloaded
-on first use) from a chosen time at 1x-300x or max speed. Click a symbol to send it to every chart
-of the panel's link colour (the dot in the panel header; click the dot to change it). Right-click
-a row: why the filter does or doesn't fire on that symbol now. **Reload filters** re-reads
-`filters/` after an edit; a bad edit is refused and the old filters keep running. Signals are
+The launcher bar (TradierPro's menubar and status bar):
+
+- **LEFT / RIGHT / TOP / FOURTH** open that Primus screen's panels and charts, each its own window,
+  tiled on its own monitor the first time and wherever you put them after that. **Panels ▾** lists
+  every panel (reopen, delete, reset to the Primus layout); **+ Panel** and **+ Chart** add one.
+- **Baskets ▾**: named sets of qualifications (type, exchange, price, float, average volume, ATR)
+  a filter can draw from; the editor shows how many symbols pass before you save.
+- **LIVE** (Massive WebSocket; delayed on Starter) or **REPLAY** a past day (downloaded on first
+  use) from a chosen time at 1x-300x or max speed.
+
+In a panel: click a symbol to send it to every chart of the panel's link colour; with **Charts
+follow new fires** on (the default) each new fire does it for you, and a chart's 🔒 holds what it
+shows. **Right-click** for the panel menu: link colour, follow, sound, rename, the filters in the
+panel, **Why isn't SYMBOL firing?** (the day minute by minute: when it would have fired, how often
+each clause passed, the closest miss with the values), and **Adjust FILTER** (every number
+editable, Test against a recorded day, Save with a backup and a CHANGES.md entry, Undo). Charts are
+TradierPro's, with the scanner's signals drawn as arrows at the price that fired them. Signals are
 logged to `%LOCALAPPDATA%\tp-scanner\signals\DAY.jsonl`. Windows, link colours and the running
-source are restored at the next launch.
+source come back at the next launch.
 
 ### The engine and CLI
 
@@ -134,12 +146,10 @@ has run on fixtures and synthetic data (the app was verified end to end on a syn
   confirmed in Massive's docs; tested on hand-made rows only. ⚠ One thing to confirm with Massive:
   whether flat-file prices are split-adjusted (the reader assumes raw). The CLI reads `.gz`
   directly.
-- **App** (`app/`): built and verified on a synthetic replay (screens fill, lists rank, click
-  links a chart, signals drawn on it, history error shown without a key). **Not yet run on
-  Massive data.**
-- **Live driver + daily cache** (`tp-massive`): built and unit-tested against Massive's documented
-  message and response formats. **Not yet connected** (no key). ⚠ The WebSocket host
-  `delayed.massive.com`, Bearer auth on REST and the flat-file path follow Massive's docs and the
-  Polygon-era layout; confirm on first run.
+- **App** (`app/`): verified on Friday 2026-10-09's real data (replay): panel windows, menu, why,
+  adjust/test/save/undo, TradierPro's chart with signal arrows, follow and hold, baskets.
+- **Massive** (`tp-massive`): REST (Bearer), grouped daily, splits, float, holidays, tickers and
+  the flat-file path all confirmed working 2026-10-11. ⚠ The live WebSocket
+  (`delayed.massive.com`) is not yet seen: first live session Monday 2026-10-12.
 - **Not built yet** (ROADMAP.md): reconnect and late-start backfill, market calendar, halts
   (LULD isn't on Starter), imbalances and NYSE IND (no source), alerts, TradierPro link.

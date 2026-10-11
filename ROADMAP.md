@@ -9,10 +9,22 @@ and unverified.
 - [x] Massive data door (`crates/tp-massive`): live WebSocket (`AM.*`), REST daily cache with
       per-session split adjustment, float, holidays, flat-file download.
 - [x] `tp-scan sync | fetch-day | live`; `replay --cache`.
-- [x] Desktop app (`app/`): four Primus screens from `filters/display.json`, trigger feeds and
-      ranked lists, link colours, chart windows and chart panels, replay at any speed,
-      Reload filters, right-click "why did/didn't this fire", resume on launch.
-- [ ] **Massive keys set; `tp-scan sync` run; first live delayed session (Monday).**
+- [x] Desktop app (`app/`): trigger feeds and ranked lists, link colours, replay at any speed,
+      Reload filters, resume on launch.
+- [x] Massive keys set, `tp-scan sync` run, Friday 10/09 replayed on real data (2026-10-11).
+- [x] **Every panel and chart its own window** (TradierPro-style), moved/resized and remembered;
+      the four Primus screens open as tiled groups; + panel, rename, filters-in-panel, reset;
+      off-screen recovery. TradierPro's look throughout (2026-10-11).
+- [x] **Right-click panel menu**: link colour, follow, sound, rename, filters; **"Why isn't X
+      firing?"** (the day minute by minute, closest miss with values, how often each clause
+      passed); **Adjust filter** (every number editable, hours/side/basket, Test against a
+      recorded day before saving, Save with backup + CHANGES.md entry, Undo) (2026-10-11).
+- [x] **TradierPro's chart** (klinecharts 9.8.12, its indicators, overlays, bar presets) with the
+      scanner's signals as fill-style arrows at the trigger price; **charts follow new fires**,
+      🔒 hold (2026-10-11).
+- [x] **Named baskets** (type, exchange, price, float, ADV, ATR) with an editor that counts what
+      passes; ticker reference data from Massive (2026-10-11).
+- [ ] **First live delayed session (Monday 10/12).**
 - [ ] The `spec/port/fixtures.json` real-session baseline: replay each date, record what fired.
 - [ ] Port corrections from `spec/port/filters.json`, one at a time, each with before/after.
 
@@ -31,9 +43,12 @@ and unverified.
       TradierPro (its single-instance handler ignores arguments today). Ask before touching it.
 - [ ] Alerts: per-panel sound and flash on a new fire, with quiet hours.
 - [ ] Panel options in the UI: rows kept, dim-after, column widths, sort.
-- [ ] Layout editing in the UI (drag panels), written back to `display.json`.
-- [ ] Chart: more timeframes, daily chart, prior-day levels, premarket high/low lines, the
-      filter's own reference lines (e.g. `pm_high`) drawn when you click its signal.
+- [x] ~~Layout editing in the UI~~: done as separate windows (panels.json), 2026-10-11.
+- [ ] Chart: premarket high/low lines, the filter's own reference lines (e.g. `pm_high`) drawn
+      when you click its signal. (Timeframes, daily, prior-day levels: done with the TradierPro
+      chart.)
+- [ ] Saving a filter edit restarts the scan's history (as Reload does). Keep the day's signals
+      across an edit, or re-run the day to the current time with the new filters.
 - [ ] Watchlists and per-symbol mute ("not this one today").
 
 ## Phase 4: better than Primus (February–April)
@@ -43,7 +58,8 @@ and unverified.
 - [ ] **Filter report card** from replays across months: fires/day, hit rate, best hours, which
       clause kills the most good signals (from `explain`).
 - [ ] **What-if**: change a threshold, replay N days, compare fire lists side by side, before
-      editing the live filter.
+      editing the live filter. (One day is done: Adjust → Test. N days and side-by-side lists
+      remain.)
 - [ ] `tradeable` gate applied set-wide (spread, price, liquidity), tuned on outcomes.
 - [ ] Replay trainer: step through a past day signal by signal, chart linked.
 - [ ] Real-time data ($199) when going live for real (~March); latency measured against the

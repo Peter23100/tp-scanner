@@ -74,7 +74,20 @@ When the user supplies a newer master file, diff it against `spec/primus/`, repl
 | `spec/primus/` | the user's master, verbatim, plus the four screen PNGs |
 | `spec/port/` | `PORT_CONTRACT.md` (what to build), `filters.json` (per-filter port decisions: as_is / corrected / skip), `fixtures.json` (the REAL-session regression set: run it once data exists), `RECOVERED_EXPRESSIONS.md` |
 
-## Status (2026-10-11)
+## Status (2026-10-11, evening)
+- **Real data works**: keys set, `sync` run (285 days, float 6,917 symbols, holidays, tickers
+  13,260), Friday 10/09 replays through all 61 filters. Live WebSocket not yet seen (Monday).
+- **App rebuilt around separate windows** (`panels.rs`, `panels.json` in the data dir, seeded from
+  display.json), TradierPro's theme; right-click menu; Why / Adjust / Basket tool windows
+  (`tools.rs`); TradierPro's chart copied into `app/src/chart/tp.ts` + `ScanChart.tsx`
+  (klinecharts 9.8.12, copied not shared: never import from TradierPro); follow + hold; baskets
+  (`basket` item, `Cond::Is`, `tickers.csv`). Window-creating commands MUST be async (8ecba67).
+- Deliberate departure from TradierPro's chart: intraday charts keep the shown day's premarket
+  (shaded), so a premarket fire has a bar to sit on.
+- Filter edits from the app write the repo's `filters/*.scan` (backup in the data dir's
+  `filter-history/`, entry in CHANGES.md). Test edits on a copy: `TP_SCANNER_FILTERS`.
+
+## Status (2026-10-11, morning)
 - **The app exists** (`app/`): screens, linked charts, replay, live, reload, explain. Verified on a
   synthetic day only. Keys: `MASSIVE_API_KEY`, `MASSIVE_S3_KEY_ID`, `MASSIVE_S3_SECRET` (env vars,
   set by the user, never in chat or the repo). Data: `%LOCALAPPDATA%\tp-scanner` (`TP_SCANNER_DATA`
