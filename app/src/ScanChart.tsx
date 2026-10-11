@@ -11,6 +11,7 @@ import { listen } from "@tauri-apps/api/event";
 import { init, dispose, registerOverlay } from "klinecharts";
 import type { LineType, CandleType, PolygonType, TooltipShowRule, LayoutChildType, PanePosition } from "klinecharts";
 import { api, LINK_HEX, nextColor } from "./api";
+import { dragBar, WinButtons } from "./win";
 import { useStore } from "./store";
 import {
   ChartInterval,
@@ -29,7 +30,6 @@ import {
   isExtMs,
   safeCalcPOC,
   safeCalcValueArea,
-  defaultIndicators,
   defaultBars,
   setIntradayChartBars,
   vpProfileOverlaySpec,
@@ -46,21 +46,27 @@ const KLINE_LOWER_PANE = ["MACD", "RSI", "KDJ", "CCI", "DMI", "OBV", "WR", "BIAS
 
 const IVL_MS: Record<string, number> = { "1m": 60_000, "5m": 300_000, "15m": 900_000 };
 
-/// Scanner policy for extended hours (differs from TradierPro on purpose). TradierPro shows the
-/// extended session on 5m only and drops the premarket at 9:25, which suits trading. The scanner
-/// fires in the premarket, and a chart that followed a fire must show the bar that fired, so every
-/// intraday timeframe keeps the shown day's premarket and post-market (and anything after the last
-/// regular-hours bar), shaded. Earlier days stay regular-hours only, as in TradierPro.
-function scannerDisplayBars(raw: OHLCVBar[]): OHLCVBar[] {
+/// Which bars an intraday chart shows. TradierPro's rule: regular hours of every day, plus the
+/// current extended session (everything after the last regular-hours bar: post-market, then the
+/// next premarket until the open). The scanner adds one case (the user's rule, 2026-10-11): when the
+/// symbol fired in today's premarket, today's premarket stays on the chart after the open too, so
+/// that fire's arrow has its bar. A symbol that only fired in regular hours gets TradierPro's chart.
+function scannerDisplayBars(raw: OHLCVBar[], keepPremarket: boolean): OHLCVBar[] {
   if (!raw.length) return raw;
   const lastDay = etDateStr(raw[raw.length - 1].time * 1000);
   let lastRth = 0;
   for (const b of raw) if (isRthMs(b.time * 1000) && b.time * 1000 > lastRth) lastRth = b.time * 1000;
   return raw.filter((b) => {
     const ms = b.time * 1000;
-    return isRthMs(ms) || (isExtMs(ms) && (etDateStr(ms) === lastDay || ms > lastRth));
+    if (isRthMs(ms)) return true;
+    if (!isExtMs(ms)) return false;
+    return ms > lastRth || (keepPremarket && etDateStr(ms) === lastDay && etMinsOfDay(ms) < RTH_START_MIN);
   });
 }
+
+/// The scanner's chart defaults (the user's, 2026-10-11): EMA9 and EMA20, plus the volume profile.
+/// TradierPro's fuller set (VWAP bands, POC, VA) stays a click away in the toolbar.
+const scannerIndicators = (): Set<IndicatorKey> => new Set<IndicatorKey>(["ema9", "ema20"]);
 
 /// A translucent band over one run of extended-hours bars (TradierPro's extHoursShade spans from a
 /// bar to the right edge; with the premarket kept, a day can have two runs, so this one has an end).
@@ -148,9 +154,10 @@ export default function ScanChart({ id, initialColor, standalone }: { id: string
 
   const [ivl, setIvl] = useState<ChartInterval>("5m");
   const [bars, setBars] = useState<number>(defaultBars("5m"));
-  const [enabled, setEnabled] = useState<Set<IndicatorKey>>(() => defaultIndicators("5m"));
+  const [enabled, setEnabled] = useState<Set<IndicatorKey>>(scannerIndicators);
   const [extras, setExtras] = useState<string[]>([]);
-  const [showVP, setShowVP] = useState(false);
+  const [showVP, setShowVP] = useState(true);
+  const [company, setCompany] = useState<string | null>(null);
   const [typed, setTyped] = useState("");
   const [ready, setReady] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -192,7 +199,6 @@ export default function ScanChart({ id, initialColor, standalone }: { id: string
   function changeIvl(next: ChartInterval) {
     setIvl(next);
     setBars(defaultBars(next));
-    setEnabled(defaultIndicators(next));
   }
 
   // ── chart lifecycle (TradierPro initChart, verbatim styles) ──
@@ -302,7 +308,13 @@ export default function ScanChart({ id, initialColor, standalone }: { id: string
       let kData: KBar[];
       if (isIntraday) {
         const raw: OHLCVBar[] = r.bars.map(([t, o, h, l, c, v]) => ({ time: t / 1000, open: o, high: h, low: l, close: c, volume: v }));
-        const all = scannerDisplayBars(raw);
+        // Keep today's premarket only if this symbol fired in it.
+        const lastDay = raw.length ? etDateStr(raw[raw.length - 1].time * 1000) : "";
+        const firedPre = signalsRef.current.some((s) => {
+          const ms = s.at_ms - 60_000;
+          return s.symbol === symbol && etMinsOfDay(ms) < RTH_START_MIN && etDateStr(ms) === lastDay;
+        });
+        const all = scannerDisplayBars(raw, firedPre);
         const out = all.length > bars + INTRADAY_INDICATOR_WARMUP ? all.slice(-(bars + INTRADAY_INDICATOR_WARMUP)) : all;
         kData = out.map((b) => ({ timestamp: b.time * 1000, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume, _rth: isRthMs(b.time * 1000) }));
         const session = sessionBars(out);
@@ -360,6 +372,12 @@ export default function ScanChart({ id, initialColor, standalone }: { id: string
   // Tell the engine which symbol to forward; load on symbol / interval / bars / source change.
   useEffect(() => {
     api.chartWatch(id, symbol || null).catch(() => {});
+    setCompany(null);
+    if (symbol)
+      api
+        .tickerName(symbol)
+        .then(setCompany)
+        .catch(() => {});
   }, [id, symbol]);
   useEffect(() => () => void api.chartWatch(id, null).catch(() => {}), [id]);
   useEffect(() => {
@@ -840,7 +858,7 @@ export default function ScanChart({ id, initialColor, standalone }: { id: string
 
   return (
     <div className="chart-wrap">
-      <div className="chart-toolbar">
+      <div className="chart-toolbar" {...dragBar}>
         <button className="link" style={{ background: LINK_HEX[color] }} title={`${color} link group: click to change`} onClick={cycle} />
         <button
           className={"chart-ind-btn " + (held ? "on" : "")}
@@ -850,7 +868,7 @@ export default function ScanChart({ id, initialColor, standalone }: { id: string
           {held ? "🔒" : "🔓"}
         </button>
         <input className="symbox" placeholder="symbol" value={typed} onChange={(e) => setTyped(e.target.value.toUpperCase())} onKeyDown={(e) => e.key === "Enter" && submit()} />
-        <span className="chart-sym">{symbol || "—"}</span>
+        <span className="chart-sym" data-drag>{symbol || "—"}</span>
         {lastBar && dataSymbolRef.current === symbol && <span className="chart-price">{lastBar.close.toFixed(2)}</span>}
         <div className="chart-sep" />
         <select className="opts-sel" value={ivl} onChange={(e) => changeIvl(e.target.value as ChartInterval)}>
@@ -929,8 +947,11 @@ export default function ScanChart({ id, initialColor, standalone }: { id: string
         <button className="chart-fit-btn" style={{ marginLeft: 4 }} onClick={loadData}>
           ↻
         </button>
+        {standalone && <WinButtons />}
       </div>
       <div className="chart-container" ref={containerRef}>
+        {/* TradierPro's watermark: the company name, faint, top left. */}
+        {symbol && <div className="chart-watermark">{company ?? symbol}</div>}
         {hover && <div className="chart-legend sig">{hover}</div>}
         {loading && <div className="chart-loading">Loading {symbol}...</div>}
         {!symbol && <div className="chart-loading">Click a symbol in a {color} panel (or type one)</div>}

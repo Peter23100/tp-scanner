@@ -1,7 +1,7 @@
 // The panel's right-click menu, and the two overlays it opens inside the panel window (rename,
 // filters in this panel). Tools that need room (why, adjust) open their own windows.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, FilterMeta, LINK_COLORS, LINK_HEX, PanelDef } from "./api";
+import { api, FilterMeta, FONT_DEFAULT, FONT_MAX, FONT_MIN, LINK_COLORS, LINK_HEX, PanelDef } from "./api";
 import { panelTitle } from "./Panel";
 
 export interface MenuAt {
@@ -52,6 +52,21 @@ export function PanelMenu({ at, def, onClose, onRename, onFilters }: { at: MenuA
         </div>
         <div className="menu-item" onClick={() => update({ sound: !def.sound })}>
           <span className="chk">{def.sound ? "✓" : ""}</span>Sound on new fires (live)
+        </div>
+        <div className="menu-row" title="also Ctrl + mouse wheel over the panel">
+          <span className="menu-lbl">Text size</span>
+          <button className="dk-btn" onClick={() => update({ font: Math.max(FONT_MIN, (def.font ?? FONT_DEFAULT) - 1) })}>
+            A−
+          </button>
+          <span className="menu-lbl">{def.font ?? FONT_DEFAULT}px</span>
+          <button className="dk-btn" onClick={() => update({ font: Math.min(FONT_MAX, (def.font ?? FONT_DEFAULT) + 1) })}>
+            A+
+          </button>
+          {def.font != null && def.font !== FONT_DEFAULT && (
+            <button className="dk-btn" onClick={() => update({ font: null })}>
+              reset
+            </button>
+          )}
         </div>
         <div className="menu-sep" />
         <div className="menu-item" onClick={() => (onClose(), onRename())}>

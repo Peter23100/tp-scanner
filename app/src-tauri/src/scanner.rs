@@ -274,7 +274,7 @@ fn load_refs(data: &std::path::Path) -> Refs {
         }
     };
     // Ticker types and exchanges (baskets). Fetched here once if a sync hasn't fetched them yet.
-    if !data.join(tp_massive::tickers::FILE).exists() {
+    if !tp_massive::tickers::is_current(data) {
         if let Ok(rest) = tp_massive::Secret::from_env(tp_massive::API_KEY_VAR).and_then(tp_massive::rest::Rest::new) {
             if let Err(e) = tp_massive::tickers::refresh(&rest, data) {
                 warnings.push(format!("ticker reference not fetched ({e}): basket types and exchanges read unknown"));

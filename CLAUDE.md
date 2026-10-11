@@ -82,8 +82,11 @@ When the user supplies a newer master file, diff it against `spec/primus/`, repl
   (`tools.rs`); TradierPro's chart copied into `app/src/chart/tp.ts` + `ScanChart.tsx`
   (klinecharts 9.8.12, copied not shared: never import from TradierPro); follow + hold; baskets
   (`basket` item, `Cond::Is`, `tickers.csv`). Window-creating commands MUST be async (8ecba67).
-- Deliberate departure from TradierPro's chart: intraday charts keep the shown day's premarket
-  (shaded), so a premarket fire has a bar to sit on.
+- Charts vs TradierPro (user's rules, 2026-10-11): premarket bars stay after the open ONLY for a
+  symbol that fired in today's premarket (otherwise TradierPro's 9:25 drop); defaults EMA9 + EMA20
+  + VP; company-name watermark (tickers.csv `name`); compact wrapping toolbar.
+- Windows have no OS title bar (`decorations(false)`): `win.tsx` dragBar + WinButtons. Dragging
+  starts only on the bar itself or a `data-drag` element, never on menu items.
 - Filter edits from the app write the repo's `filters/*.scan` (backup in the data dir's
   `filter-history/`, entry in CHANGES.md). Test edits on a copy: `TP_SCANNER_FILTERS`.
 

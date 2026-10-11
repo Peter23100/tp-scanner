@@ -398,7 +398,7 @@ th {
   top: 0;
   background: #0d1624;
   color: var(--dkd);
-  font-size: 9px;
+  font-size: max(8px, calc(var(--pfs, 12px) - 3px));
   font-family: var(--sans);
   font-weight: 800;
   text-transform: uppercase;
@@ -411,7 +411,7 @@ th {
 td {
   padding: 1px 5px;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: var(--pfs, 12px);
   font-weight: 800;
   color: var(--dkt);
   border-bottom: 1px solid rgba(26, 42, 68, 0.45);
@@ -431,7 +431,7 @@ td.tm {
 }
 td.fname {
   font-family: var(--sans);
-  font-size: 10px;
+  font-size: calc(var(--pfs, 12px) - 2px);
   color: var(--dkd);
 }
 tbody tr {
@@ -921,10 +921,23 @@ td.rl {
 /* ── Charts: TradierPro's chart window (App.css "Chart Window"), plus the scanner's notes ── */
 .chart-window { height:100%; display:flex; }
 .chart-wrap { display:flex; flex-direction:column; height:100%; width:100%; overflow:hidden; background:var(--dk); }
+/* Compact, and wraps to a second row on a narrow chart rather than hiding options (scanner). */
 .chart-toolbar {
-  display:flex; align-items:center; gap:6px; padding:3px 8px;
+  display:flex; align-items:center; flex-wrap:wrap; gap:3px; padding:2px 4px;
   background:#04080f; border-bottom:1px solid var(--dkb);
-  flex-shrink:0; height:28px; white-space:nowrap; overflow:hidden;
+  flex-shrink:0; min-height:22px; white-space:nowrap;
+}
+.chart-toolbar > button:not(.link):not(.winbtn), .chart-toolbar .opts-sel, .chart-toolbar .symbox {
+  padding:1px 4px !important; font-size:9px !important; letter-spacing:0 !important; margin-left:0 !important; height:17px;
+}
+.chart-toolbar .opts-sel { padding:0 2px !important; }
+.chart-toolbar .chart-sym { font-size:12px; }
+.chart-toolbar .chart-price { font-size:11px; }
+.chart-toolbar .chart-sep { height:12px; margin:0 1px; }
+.chart-watermark {
+  position:absolute; top:6px; left:12px; pointer-events:none; z-index:4;
+  color:rgba(192,204,224,0.18); font-family:var(--sans); font-size:14px; font-weight:800;
+  letter-spacing:.5px; text-transform:uppercase; white-space:nowrap; overflow:hidden; max-width:70%;
 }
 .chart-sym { font-size:13px; font-weight:900; font-family:var(--font); color:#00cfff; letter-spacing:.5px; }
 .chart-price { font-size:12px; font-weight:800; font-family:var(--font); color:var(--dkt); }
@@ -959,6 +972,19 @@ td.rl {
 .symbox { width:64px; background:var(--dk2); border:1px solid var(--dkb); color:var(--dkt); font-family:var(--font); font-weight:800; padding:1px 4px; outline:none; text-transform:uppercase; }
 .symbox:focus { border-color:var(--blue); color:var(--cyan); }
 
+/* Window buttons (no OS title bar) */
+.winbtns { display:flex; gap:2px; margin-left:4px; flex-shrink:0; }
+.winbtn {
+  width:16px; height:14px; padding:0; line-height:12px; font-size:11px; font-weight:800;
+  background:transparent; border:1px solid transparent; color:var(--dkd); cursor:pointer; border-radius:2px;
+}
+.winbtn:hover { background:var(--dk3); color:var(--dkt); border-color:var(--dkb); }
+.winbtn.x:hover { background:#5a0000; color:#fff; border-color:#cc2200; }
+.menubar .winbtn { color:#333; }
+.menubar .winbtn:hover { background:rgba(0,0,0,.12); color:#000; border-color:transparent; }
+.menubar .winbtn.x:hover { background:#c42b1c; color:#fff; }
+.chart-toolbar .winbtns { margin-left:2px; }
+
 /* Dark scrollbars, as TradierPro's dark tables */
 ::-webkit-scrollbar {
   width: 10px;
@@ -983,3 +1009,4 @@ td.rl {
   background: #8a9aaa;
   border: none;
 }
+.tool-bar .winbtns { margin-left: auto; }

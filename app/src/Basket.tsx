@@ -4,6 +4,7 @@
 // it's saved. Saving writes filters/baskets.scan (backed up, logged in CHANGES.md) and reloads.
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { dragBar, WinButtons } from "./win";
 import { api, BasketCount, fmtNum } from "./api";
 import { useStore } from "./store";
 
@@ -141,10 +142,11 @@ export default function BasketWindow({ name: initial }: { name: string }) {
 
   return (
     <div className="tool">
-      <div className="tool-bar">
+      <div className="tool-bar" {...dragBar}>
         <span className="tool-title">basket</span>
         {isNew ? <input className="menu-in" style={{ width: 160, textTransform: "none" }} placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} /> : <span className="tool-title">{name}</span>}
         <span className="dim">{used.length ? `used by ${used.join(", ")}` : "used by no filter yet"}</span>
+        <WinButtons />
       </div>
       <div className="tool-body">
         <h4>Security type (none ticked = any)</h4>

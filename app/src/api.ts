@@ -85,7 +85,13 @@ export interface PanelDef {
   sound: boolean;
   group: string;
   tile?: [number, number, number, number] | null;
+  /** Row text size, px; null = the default (12). */
+  font?: number | null;
 }
+
+export const FONT_DEFAULT = 12;
+export const FONT_MIN = 8;
+export const FONT_MAX = 24;
 export interface ChartSeed {
   label: string;
   color: string;
@@ -186,6 +192,7 @@ export const api = {
   filterUndo: (name: string, kind: "filter" | "basket" = "filter") => invoke<string>("filter_undo", { name, kind }),
   basketCount: (name: string, block: string) => invoke<BasketCount>("basket_count", { name, block }),
   openDialog: (kind: "why" | "edit" | "basket", filter: string, symbol: string | null) => invoke<void>("open_dialog", { kind, filter, symbol }),
+  tickerName: (symbol: string) => invoke<string | null>("ticker_name", { symbol }),
   chartWatch: (id: string, symbol: string | null) => invoke<void>("chart_watch", { id, symbol }),
   openScreen: (name: string) => invoke<void>("open_screen", { name }),
   openChart: (color: string) => invoke<void>("open_chart", { color }),

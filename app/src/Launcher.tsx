@@ -6,6 +6,7 @@ import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { api, LINK_COLORS, LINK_HEX } from "./api";
 import { useStore } from "./store";
 import { panelTitle } from "./Panel";
+import { dragBar, WinButtons } from "./win";
 
 function lastWeekday(): string {
   const d = new Date();
@@ -66,8 +67,8 @@ export default function Launcher() {
 
   return (
     <div className="launcher">
-      <div className="menubar">
-        <span className="mlogo">
+      <div className="menubar" {...dragBar}>
+        <span className="mlogo" data-drag>
           TP<span>SCANNER</span>
         </span>
         {groups.map((g) => (
@@ -103,6 +104,7 @@ export default function Launcher() {
           <span className={"mbadge " + (errors > 0 ? "badge-err" : "badge-idle")} style={{ cursor: "pointer" }} title="errors and warnings" onClick={() => toggle("details")}>
             {errors} ERR{warnings > 0 && ` · ${warnings} ⚠`}
           </span>
+          <WinButtons closeTitle="quit TP Scanner (windows are remembered)" />
         </span>
       </div>
       <div className="statusbar">

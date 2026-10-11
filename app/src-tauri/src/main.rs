@@ -97,6 +97,8 @@ struct App {
     exiting: AtomicBool,
     rest: Option<Arc<tp_massive::rest::Rest>>,
     chart_cache: Mutex<HashMap<String, Arc<Vec<[f64; 6]>>>>,
+    /// Symbol → company name (tickers.csv), read on first use.
+    names: Mutex<Option<Arc<HashMap<String, String>>>>,
 }
 
 fn write_json<T: Serialize>(path: &std::path::Path, v: &T) {
@@ -318,7 +320,7 @@ async fn panel_create(handle: AppHandle, app: State<'_, App>) -> Result<String, 
     let id = {
         let mut g = app.panels.lock().expect("panels");
         let id = g.new_id();
-        g.panels.push(PanelDef { id: id.clone(), title: Some("New panel".into()), filters: vec![], link: "red".into(), follow: true, sound: false, group: String::new(), tile: None });
+        g.panels.push(PanelDef { id: id.clone(), title: Some("New panel".into()), filters: vec![], link: "red".into(), follow: true, sound: false, group: String::new(), tile: None, font: None });
         id
     };
     app.save_panels(&handle);
@@ -399,6 +401,17 @@ async fn reset_layout(handle: AppHandle, app: State<'_, App>) -> Result<(), Stri
     app.save_ui();
     app.save_panels(&handle);
     Ok(())
+}
+
+/// The company name for a chart's watermark. `None` when the ticker list doesn't have it.
+#[tauri::command]
+fn ticker_name(app: State<'_, App>, symbol: String) -> Option<String> {
+    let mut g = app.names.lock().expect("names");
+    // Read once; re-read while empty (the list may still be downloading at first start).
+    if g.as_ref().is_none_or(|m| m.is_empty()) {
+        *g = Some(Arc::new(tp_massive::tickers::names(&app.data_dir)));
+    }
+    g.as_ref().and_then(|m| m.get(symbol.trim().to_uppercase().as_str()).cloned())
 }
 
 /// Tell the engine which symbol a chart shows, so its live bars are forwarded.
@@ -546,10 +559,13 @@ fn open_window(handle: &AppHandle, app: &App, rec: &WinRec, tile: Option<(String
         "chart" => (format!("#/chart/{}/{}", rec.label, rec.arg), 900.0, 600.0),
         k => return Err(format!("unknown window kind `{k}`")),
     };
+    // No OS title bar: the panel or chart header is the bar (drag to move, double-click to
+    // maximize, its own minimize and close). The edges still resize.
     let win = WebviewWindowBuilder::new(handle, &rec.label, WebviewUrl::App(route.into()))
         .title(if rec.kind == "panel" { "Panel" } else { "Chart" })
         .inner_size(w, h)
         .min_inner_size(160.0, 60.0)
+        .decorations(false)
         .visible(false)
         .build()
         .map_err(|e| e.to_string())?;
@@ -824,6 +840,7 @@ async fn open_dialog(handle: AppHandle, app: State<'_, App>, kind: String, filte
             _ => "Adjust filter",
         })
         .inner_size(w, h)
+        .decorations(false)
         .visible(false)
         .build()
         .map_err(|e| e.to_string())?;
@@ -902,6 +919,7 @@ fn main() {
             exiting: AtomicBool::new(false),
             rest,
             chart_cache: Mutex::new(HashMap::new()),
+            names: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             get_filters,
@@ -923,6 +941,7 @@ fn main() {
             reset_layout,
             chart_watch,
             chart_bars,
+            ticker_name,
             open_chart,
             set_chart_color,
             diagnose,

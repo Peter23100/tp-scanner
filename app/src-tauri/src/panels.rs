@@ -24,7 +24,13 @@ pub struct PanelDef {
     pub group: String,
     #[serde(default)]
     pub tile: Option<[f64; 4]>,
+    /// Text size in the panel's rows, px (`None` = the default).
+    #[serde(default)]
+    pub font: Option<f64>,
 }
+
+/// The range a panel's text size may take, px.
+pub const FONT_RANGE: (f64, f64) = (8.0, 24.0);
 
 /// A chart that opens with a group (the charts that sat inside the Primus screens).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -80,6 +86,11 @@ pub fn validate(p: &PanelDef) -> Result<(), String> {
     if p.id.is_empty() || !p.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
         return Err(format!("panel id `{}` must be letters, digits, - or _", p.id));
     }
+    if let Some(f) = p.font {
+        if !(FONT_RANGE.0..=FONT_RANGE.1).contains(&f) {
+            return Err(format!("text size {f} is outside {}..{} px", FONT_RANGE.0, FONT_RANGE.1));
+        }
+    }
     Ok(())
 }
 
@@ -115,6 +126,7 @@ pub fn seed(d: &Display) -> Panels {
                             sound: false,
                             group: s.name.clone(),
                             tile,
+                            font: None,
                         });
                     }
                     iy += ih;
@@ -166,10 +178,15 @@ mod tests {
 
     #[test]
     fn bad_edits_are_refused() {
-        let mut p = PanelDef { id: "p1".into(), title: None, filters: vec![], link: "mauve".into(), follow: true, sound: false, group: String::new(), tile: None };
+        let mut p = PanelDef { id: "p1".into(), title: None, filters: vec![], link: "mauve".into(), follow: true, sound: false, group: String::new(), tile: None, font: None };
         assert!(validate(&p).unwrap_err().contains("mauve"));
         p.link = "red".into();
         p.id = "a b".into();
         assert!(validate(&p).is_err());
+        p.id = "p1".into();
+        p.font = Some(40.0);
+        assert!(validate(&p).unwrap_err().contains("text size"));
+        p.font = Some(14.0);
+        validate(&p).unwrap();
     }
 }

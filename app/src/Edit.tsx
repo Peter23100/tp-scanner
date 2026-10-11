@@ -4,6 +4,7 @@
 // reloads the scan and logs the change with your reason; Undo puts the previous file back.
 import { useEffect, useMemo, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { dragBar, WinButtons } from "./win";
 import { api, FilterText, TestResult } from "./api";
 import { useStore } from "./store";
 
@@ -107,8 +108,8 @@ export default function EditWindow({ filter }: { filter: string }) {
 
   return (
     <div className="tool">
-      <div className="tool-bar">
-        <span className="tool-title">{filter}</span>
+      <div className="tool-bar" {...dragBar}>
+        <span className="tool-title" data-drag>{filter}</span>
         <span className="dim">{src.file}</span>
         <label className="sel">
           hours
@@ -150,6 +151,7 @@ export default function EditWindow({ filter }: { filter: string }) {
             Discard text edits
           </button>
         )}
+        <WinButtons />
       </div>
       <div className="tool-body">
         {raw === null ? (

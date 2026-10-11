@@ -4,7 +4,8 @@
 // adjust a filter). On a row, the menu starts from that row's symbol and filter.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { api, FilterMeta, fmtNum, LINK_HEX, nextColor, PanelDef, SignalDto } from "./api";
+import { api, FilterMeta, fmtNum, FONT_DEFAULT, FONT_MAX, FONT_MIN, LINK_HEX, nextColor, PanelDef, SignalDto } from "./api";
+import { dragBar, WinButtons } from "./win";
 import { useStore } from "./store";
 import { FiltersBox, MenuAt, PanelMenu, RenameBox } from "./Menu";
 
@@ -86,6 +87,14 @@ export default function Panel({ def, meta, filters: allFilters }: { def: PanelDe
   }, [rows, def.sound, mode]);
 
   const update = (patch: Partial<PanelDef>) => api.panelUpdate({ ...def, ...patch }).catch(() => {});
+  const font = def.font ?? FONT_DEFAULT;
+  // Ctrl + mouse wheel sizes the panel's text (saved with the panel).
+  const onWheel = (e: React.WheelEvent) => {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    const next = Math.min(FONT_MAX, Math.max(FONT_MIN, font + (e.deltaY < 0 ? 1 : -1)));
+    if (next !== font) update({ font: next });
+  };
   const listRows = isList ? filters.flatMap((f) => (lists[f] ?? []).map((r) => ({ ...r, filter: f }))) : [];
 
   const pick = (symbol: string) => api.linkSet(color, symbol).catch(() => {});
@@ -97,9 +106,9 @@ export default function Panel({ def, meta, filters: allFilters }: { def: PanelDe
   const symClass = (side: string) => "sym " + (side === "long" ? "up" : side === "short" ? "dn" : "");
 
   return (
-    <div className={`panel tone-${tone}`} onContextMenu={(e) => openMenu(e)}>
-      <div className="phead">
-        <span className="ptitle" title={filters.map((f) => describe(meta.get(f))).join("\n")}>
+    <div className={`panel tone-${tone}`} style={{ "--pfs": `${font}px` } as React.CSSProperties} onContextMenu={(e) => openMenu(e)} onWheel={onWheel}>
+      <div className="phead" {...dragBar} title="drag to move · double-click to maximize · right-click for the menu">
+        <span className="ptitle" data-drag title={filters.map((f) => describe(meta.get(f))).join("\n")}>
           {panelTitle(def)}
         </span>
         <span className="pcount">{isList ? listRows.length : rows.length}</span>
@@ -109,6 +118,7 @@ export default function Panel({ def, meta, filters: allFilters }: { def: PanelDe
           </button>
         )}
         <button className="link" style={{ background: LINK_HEX[color] }} title={`linked to ${color} charts${linked ? ` (${linked})` : ""}: click to change`} onClick={() => update({ link: nextColor(color) })} />
+        <WinButtons closeTitle="close this panel (it stays in Panels ▾)" />
       </div>
       {missing.length > 0 && <div className="pwarn">not loaded: {missing.join(", ")}</div>}
       {filters.length === 0 && <div className="dk-empty">No filters in this panel yet. Right-click → Filters in this panel…</div>}

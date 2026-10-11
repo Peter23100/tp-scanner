@@ -3,6 +3,7 @@
 // the closest it came, and where it stands at the last bar. Plus the running scan's own view now.
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { dragBar, WinButtons } from "./win";
 import { api, Diagnosis, fmtNum } from "./api";
 
 export default function WhyWindow({ filter, symbol: initial }: { filter: string; symbol: string }) {
@@ -36,8 +37,8 @@ export default function WhyWindow({ filter, symbol: initial }: { filter: string;
   const fired = d && d.fires.length > 0;
   return (
     <div className="tool">
-      <div className="tool-bar">
-        <span className="tool-title">{filter}</span>
+      <div className="tool-bar" {...dragBar}>
+        <span className="tool-title" data-drag>{filter}</span>
         <input
           className="menu-in"
           value={typed}
@@ -50,6 +51,7 @@ export default function WhyWindow({ filter, symbol: initial }: { filter: string;
         <button className="dk-btn" onClick={() => api.openDialog("edit", filter, null).catch(() => {})}>
           Adjust filter…
         </button>
+        <WinButtons />
       </div>
       <div className="tool-body">
         {err && <p className="bad">{err}</p>}

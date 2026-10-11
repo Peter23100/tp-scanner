@@ -86,7 +86,10 @@ shows. **Right-click** for the panel menu: link colour, follow, sound, rename, t
 panel, **Why isn't SYMBOL firing?** (the day minute by minute: when it would have fired, how often
 each clause passed, the closest miss with the values), and **Adjust FILTER** (every number
 editable, Test against a recorded day, Save with a backup and a CHANGES.md entry, Undo). Charts are
-TradierPro's, with the scanner's signals drawn as arrows at the price that fired them. Signals are
+TradierPro's, with the scanner's signals drawn as arrows at the price that fired them (premarket
+bars stay after the open only for a symbol that fired premarket). Windows have no OS title bar:
+drag the header, double-click it to maximize; Ctrl + mouse wheel (or the menu's A−/A+) sizes a
+panel's text. Signals are
 logged to `%LOCALAPPDATA%\tp-scanner\signals\DAY.jsonl`. Windows, link colours and the running
 source come back at the next launch.
 
