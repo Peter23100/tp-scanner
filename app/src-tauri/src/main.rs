@@ -256,8 +256,10 @@ fn remember(app: &App, rec: WinRec) {
     app.save_ui();
 }
 
+// Window-creating commands must be async: a sync command runs on the main thread, and building a
+// webview from there deadlocks on Windows (the window appears frozen and blank).
 #[tauri::command]
-fn open_screen(handle: AppHandle, app: State<'_, App>, name: String) -> Result<(), String> {
+async fn open_screen(handle: AppHandle, app: State<'_, App>, name: String) -> Result<(), String> {
     let rec = WinRec { label: format!("screen-{name}"), kind: "screen".into(), arg: name };
     open_window(&handle, &rec)?;
     remember(&app, rec);
@@ -265,7 +267,7 @@ fn open_screen(handle: AppHandle, app: State<'_, App>, name: String) -> Result<(
 }
 
 #[tauri::command]
-fn open_chart(handle: AppHandle, app: State<'_, App>, color: String) -> Result<(), String> {
+async fn open_chart(handle: AppHandle, app: State<'_, App>, color: String) -> Result<(), String> {
     let n = (1..).find(|n| handle.get_webview_window(&format!("chart-{n}")).is_none()).expect("a free number");
     let rec = WinRec { label: format!("chart-{n}"), kind: "chart".into(), arg: color };
     open_window(&handle, &rec)?;
