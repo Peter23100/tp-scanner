@@ -3,9 +3,10 @@
 ## Goal
 A real-time, full-market equity scanner that replaces Primus (subscription ends ~May 2027). The
 user is an active day trader who trades its signals, sibling project of TradierPro
-(`C:\tradier-pro`, the trading terminal). The design and its reasoning:
-`C:\tradier-pro\PRIMUS_REPLACEMENT_INVESTIGATION.md` (its in-tree workspace layout is superseded:
-this is a separate repo by the user's choice).
+(`C:\tradier-pro`, the trading terminal; NOT present on the scanner PC). The design and its
+reasoning: `docs/PRIMUS_REPLACEMENT_INVESTIGATION.md`, with `docs/MASSIVE_EQUITY_SCOPING.md` as its
+sibling (both copied from TradierPro 2026-10-12; the investigation's in-tree workspace layout is
+superseded: this is a separate repo by the user's choice).
 
 What the user wants, in their words: translate the existing filters easily · **correct data** ·
 adjust filters much more easily · **"tune the program so that it picks up only tradeable symbols:
