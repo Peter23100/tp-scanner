@@ -74,6 +74,15 @@ When the user supplies a newer master file, diff it against `spec/primus/`, repl
 | `spec/primus/` | the user's master, verbatim, plus the four screen PNGs |
 | `spec/port/` | `PORT_CONTRACT.md` (what to build), `filters.json` (per-filter port decisions: as_is / corrected / skip), `fixtures.json` (the REAL-session regression set: run it once data exists), `RECOVERED_EXPRESSIONS.md` |
 
+## Status (2026-10-11, late)
+- **Live scan is per-second** (`A.*`, `scanner::LIVE_CHANNELS`; CLI `live --minute` for `AM.*`).
+  Probed: Starter authorizes `A`/`AM`, refuses `T`/`Q`. Bench (`tp-scan-cli/tests/per_second_bench.rs`,
+  ignored): 2.85M one-second bars, 9,124 symbols, 61 filters = 12.3 s for 10 market minutes (49x).
+  Not yet seen live (first session Mon 10/12). Replays stay minute (flat files).
+- Windows: no shadow (Win11 rounded corners read as gaps), launcher always on top, the panel menu
+  is its own `popup-menu` window (closes on blur), rename/filters in `#/panelset/<id>`. One-time
+  launch tidy (`geom_version` 2) and Tidy reach 45 px; release snap 18 px.
+
 ## Status (2026-10-11, evening)
 - **Real data works**: keys set, `sync` run (285 days, float 6,917 symbols, holidays, tickers
   13,260), Friday 10/09 replays through all 61 filters. Live WebSocket not yet seen (Monday).

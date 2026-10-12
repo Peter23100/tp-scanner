@@ -5,7 +5,7 @@
 //! tp-scan replay --filters <dir> --bars <file> [options]
 //! tp-scan sync [--days N]
 //! tp-scan fetch-day YYYY-MM-DD
-//! tp-scan live --filters <dir> [--realtime] [--jsonl <file>] [--quiet]
+//! tp-scan live --filters <dir> [--realtime] [--minute] [--jsonl <file>] [--quiet]
 //! ```
 //!
 //! `sync` fills the local Massive cache (`%LOCALAPPDATA%\tp-scanner`): every US stock's daily bar
@@ -50,7 +50,7 @@ const USAGE: &str = "usage:
                  [--cache] [--explain FILTER:SYMBOL] [--quiet]
   tp-scan sync [--days N]
   tp-scan fetch-day YYYY-MM-DD
-  tp-scan live --filters <dir> [--realtime] [--jsonl <file>] [--quiet]";
+  tp-scan live --filters <dir> [--realtime] [--minute] [--jsonl <file>] [--quiet]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -420,7 +420,7 @@ fn fetch_day(date: &str) -> Result<(), String> {
 }
 
 fn live(args: &[String]) -> Result<(), String> {
-    let (mut filters, mut realtime, mut jsonl, mut quiet) = (None, false, None, false);
+    let (mut filters, mut realtime, mut jsonl, mut quiet, mut minute) = (None, false, None, false, false);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -428,6 +428,7 @@ fn live(args: &[String]) -> Result<(), String> {
             "--jsonl" => jsonl = Some(PathBuf::from(it.next().ok_or("--jsonl needs a value")?)),
             "--realtime" => realtime = true,
             "--quiet" => quiet = true,
+            "--minute" => minute = true,
             _ => return Err(format!("unknown option `{a}`\n{USAGE}")),
         }
     }
@@ -442,8 +443,10 @@ fn live(args: &[String]) -> Result<(), String> {
     let mut sink = Console { jsonl, quiet, signals: 0, errors: vec![] };
     let key = tp_massive::Secret::from_env(tp_massive::API_KEY_VAR).map_err(mass)?;
     let url = if realtime { tp_massive::ws::REALTIME_URL } else { tp_massive::ws::DELAYED_URL };
-    eprintln!("connecting to {url} (AM.*)");
-    let mut src = tp_massive::ws::LiveSource::start(key, url, "AM.*");
+    // Per-second bars by default (filters see each second as it closes); --minute for minute bars.
+    let channels = if minute { "AM.*" } else { "A.*" };
+    eprintln!("connecting to {url} ({channels})");
+    let mut src = tp_massive::ws::LiveSource::start(key, url, channels);
     let mut last_report = std::time::Instant::now();
     loop {
         match src.next_timeout(std::time::Duration::from_secs(1)) {

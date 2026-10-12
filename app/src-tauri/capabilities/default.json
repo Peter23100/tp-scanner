@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Every scanner window: the launcher, the panels and the charts",
-  "windows": ["launcher", "panel-*", "chart-*", "dialog-*"],
+  "windows": ["launcher", "panel-*", "chart-*", "dialog-*", "popup-*"],
   "permissions": [
     "core:default",
     "core:webview:default",

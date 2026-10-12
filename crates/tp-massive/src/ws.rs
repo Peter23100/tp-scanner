@@ -1,8 +1,8 @@
 //! The live market-data door: Massive's WebSocket as a [`MarketSource`].
 //!
 //! A background thread owns the socket (its own small tokio runtime) and hands bars over a channel,
-//! so the engine stays synchronous and deterministic, exactly as with a replay. `AM.*` is every US
-//! stock's minute bar, sent once the minute closes. On Starter the feed is the 15-minute delayed
+//! so the engine stays synchronous and deterministic, exactly as with a replay. `A.*` is every US
+//! stock's per-second bar (`AM.*` the minute bar), sent once it closes. On Starter the feed is the 15-minute delayed
 //! one; the code path is identical to real time, only the host differs.
 //!
 //! The supervisor reconnects with backoff (1 s doubling to 30 s) and publishes a [`FeedStatus`]
@@ -50,6 +50,9 @@ pub struct FeedStatus {
     pub bars: u64,
     /// The newest bar's start (market time; ~15 minutes behind the clock on the delayed feed).
     pub last_bar_start: Option<Ts>,
+    /// The newest bar's end (start + its width: a second for `A`, a minute for `AM`). The market
+    /// clock, as far as the feed has delivered it.
+    pub last_bar_end: Option<Ts>,
     /// Wall-clock ms when the last message of any kind arrived.
     pub last_message_wall_ms: Option<i64>,
     /// Messages or bars that couldn't be used (malformed, insane OHLC). Counted, never fatal.
@@ -67,6 +70,7 @@ impl FeedStatus {
             state: FeedState::Connecting,
             bars: 0,
             last_bar_start: None,
+            last_bar_end: None,
             last_message_wall_ms: None,
             bad_messages: 0,
             reconnects: 0,
@@ -79,7 +83,8 @@ impl FeedStatus {
 /// One decoded WebSocket message.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WsMsg {
-    Bar { symbol: String, bar: Bar<Unadjusted> },
+    /// A bar from `A` (per-second, `Resolution::Second`) or `AM` (per-minute).
+    Bar { symbol: String, resolution: Resolution, bar: Bar<Unadjusted> },
     Status { status: String, message: String },
     /// Well-formed but not for us (another channel, an OTC ticker).
     Ignored,
@@ -105,7 +110,8 @@ fn parse_one(m: &Value) -> WsMsg {
             status: m.get("status").and_then(Value::as_str).unwrap_or("").to_string(),
             message: m.get("message").and_then(Value::as_str).unwrap_or("").to_string(),
         },
-        Some("AM") => {
+        Some(ev @ ("AM" | "A")) => {
+            let resolution = if ev == "A" { Resolution::Second } else { Resolution::Minute };
             if m.get("otc").and_then(Value::as_bool) == Some(true) {
                 return WsMsg::Ignored;
             }
@@ -119,16 +125,17 @@ fn parse_one(m: &Value) -> WsMsg {
                 n("c"),
                 n("v"),
             ) else {
-                return WsMsg::Bad(format!("AM missing a field: {}", truncate(&m.to_string())));
+                return WsMsg::Bad(format!("{ev} missing a field: {}", truncate(&m.to_string())));
             };
             let Some(start) = Ts::from_millis(s).filter(|t| (946_684_800_000..4_102_444_800_000).contains(&t.millis())) else {
-                return WsMsg::Bad(format!("AM {sym}: start {s} is not a ms timestamp"));
+                return WsMsg::Bad(format!("{ev} {sym}: start {s} is not a ms timestamp"));
             };
             if !(l <= o.min(c) && o.max(c) <= h && v >= 0.0) || sym.is_empty() {
-                return WsMsg::Bad(format!("AM {sym}: insane bar o={o} h={h} l={l} c={c} v={v}"));
+                return WsMsg::Bad(format!("{ev} {sym}: insane bar o={o} h={h} l={l} c={c} v={v}"));
             }
             WsMsg::Bar {
                 symbol: sym.to_string(),
+                resolution,
                 bar: Bar { start, open: Price::new(o), high: Price::new(h), low: Price::new(l), close: Price::new(c), volume: v },
             }
         }
@@ -159,7 +166,7 @@ pub struct LiveSource {
 
 impl LiveSource {
     /// Connect to `url` (normally [`DELAYED_URL`] on Starter) and subscribe to `params`
-    /// (`"AM.*"` for the whole market).
+    /// (`"A.*"`: every stock's per-second bar; `"AM.*"`: per-minute).
     pub fn start(key: Secret, url: &str, params: &str) -> LiveSource {
         let (tx, rx) = mpsc::channel();
         let status = Arc::new(Mutex::new(FeedStatus::new(url)));
@@ -309,7 +316,7 @@ async fn session(
         st.lock().expect("status").last_message_wall_ms = Some(now_ms());
         for m in parse_messages(&text) {
             match m {
-                WsMsg::Bar { symbol, bar } => {
+                WsMsg::Bar { symbol, resolution, bar } => {
                     let symbol = match interned.get(&symbol) {
                         Some(s) => s.clone(),
                         None => {
@@ -323,9 +330,10 @@ async fn session(
                         s.bars += 1;
                         if s.last_bar_start.is_none_or(|t| bar.start > t) {
                             s.last_bar_start = Some(bar.start);
+                            s.last_bar_end = bar.start.plus_millis(resolution.millis().unwrap_or(60_000));
                         }
                     }
-                    if tx.send(MarketEvent::Bar { symbol, resolution: Resolution::Minute, bar }).is_err() {
+                    if tx.send(MarketEvent::Bar { symbol, resolution, bar }).is_err() {
                         return Ended::Stop;
                     }
                 }
@@ -376,8 +384,9 @@ mod tests {
         let m = parse_messages(FRAME);
         assert_eq!(m.len(), 2);
         assert!(matches!(&m[0], WsMsg::Status { status, .. } if status == "auth_success"));
-        let WsMsg::Bar { symbol, bar } = &m[1] else { panic!("{:?}", m[1]) };
+        let WsMsg::Bar { symbol, resolution, bar } = &m[1] else { panic!("{:?}", m[1]) };
         assert_eq!(symbol, "GTE");
+        assert_eq!(*resolution, Resolution::Minute);
         assert_eq!(bar.start.millis(), 1_610_144_640_000, "s is the START, in ms");
         assert_eq!(bar.close.value(), 0.4486);
         assert_eq!(bar.volume, 4110.0, "v is the bar's volume, not the day's (av)");
@@ -401,12 +410,25 @@ mod tests {
         assert_eq!(parse_messages(r#"[{"ev":"T","sym":"X"}]"#), vec![WsMsg::Ignored]);
     }
 
+    /// Massive's per-second aggregate (`A`) has the AM fields; it's a one-second bar.
+    #[test]
+    fn decodes_a_per_second_bar() {
+        let a = r#"[{"ev":"A","sym":"SPCE","v":200,"av":8642007,"op":25.66,"vw":25.3981,"o":25.39,"c":25.39,"h":25.39,"l":25.39,"a":25.3714,"z":50,"s":1610144868000,"e":1610144869000}]"#;
+        let m = parse_messages(a);
+        let [WsMsg::Bar { symbol, resolution, bar }] = m.as_slice() else { panic!("{m:?}") };
+        assert_eq!((symbol.as_str(), *resolution), ("SPCE", Resolution::Second));
+        assert_eq!(bar.start.millis(), 1_610_144_868_000);
+        assert_eq!(bar.volume, 200.0);
+        let insane = r#"[{"ev":"A","sym":"X","v":1,"o":5,"c":5,"h":4,"l":3,"s":1610144640000}]"#;
+        assert!(matches!(parse_messages(insane).as_slice(), [WsMsg::Bad(m)] if m.starts_with("A ")));
+    }
+
     #[test]
     fn a_channel_source_feeds_the_engine_contract() {
         let (tx, rx) = mpsc::channel();
         let mut src = LiveSource::from_channel(rx);
-        let WsMsg::Bar { symbol, bar } = parse_messages(FRAME).remove(1) else { panic!() };
-        tx.send(MarketEvent::Bar { symbol: Arc::from(symbol.as_str()), resolution: Resolution::Minute, bar }).unwrap();
+        let WsMsg::Bar { symbol, resolution, bar } = parse_messages(FRAME).remove(1) else { panic!() };
+        tx.send(MarketEvent::Bar { symbol: Arc::from(symbol.as_str()), resolution, bar }).unwrap();
         assert!(matches!(src.next_timeout(Duration::from_millis(10)), Poll::Event(_)));
         assert!(matches!(src.next_timeout(Duration::from_millis(10)), Poll::Timeout));
         drop(tx);

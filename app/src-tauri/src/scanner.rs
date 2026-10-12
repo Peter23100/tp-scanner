@@ -27,6 +27,9 @@ use tp_scan_engine::engine::{Engine, EngineError, ListChange, Signal, Sink};
 use tp_scan_engine::instrument::JsonlSink;
 use tp_scan_engine::state::Reference;
 
+/// What the live scan subscribes to: every US stock's per-second bar.
+pub const LIVE_CHANNELS: &str = "A.*";
+
 /// Signals kept for windows that open later (newest last).
 const KEEP_SIGNALS: usize = 5000;
 /// Rows per list sent to the screens.
@@ -434,7 +437,9 @@ impl Runner {
                 match tp_massive::Secret::from_env(tp_massive::API_KEY_VAR) {
                     Ok(key) => {
                         let url = if realtime { tp_massive::ws::REALTIME_URL } else { tp_massive::ws::DELAYED_URL };
-                        self.source = Source::Live(LiveSource::start(key, url, "AM.*"));
+                        // Per-second bars for the whole market (`A.*`): filters see each second as it
+                        // closes, not each minute. (Trades, `T.*`, aren't on the Starter plan.)
+                        self.source = Source::Live(LiveSource::start(key, url, LIVE_CHANNELS));
                         self.open_signal_log();
                     }
                     Err(e) => self.set_feed_error(e.to_string()),
@@ -668,7 +673,7 @@ impl Runner {
                 status.bars = fs.bars;
                 status.bad_messages = fs.bad_messages;
                 status.reconnects = fs.reconnects;
-                if let Some(t) = fs.last_bar_start.and_then(|t| t.plus_millis(60_000)) {
+                if let Some(t) = fs.last_bar_end {
                     status.market_time = Some(hms(t));
                     status.market_ms = Some(t.millis());
                     status.delay_s = Some((now_ms() - t.millis()) / 1000);

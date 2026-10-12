@@ -2,12 +2,12 @@
 // Click a symbol: every chart of the panel's link colour shows it.
 // Right-click anywhere: the panel menu (link colour, follow, sound, filters, why isn't X firing,
 // adjust a filter). On a row, the menu starts from that row's symbol and filter.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, FilterMeta, fmtNum, FONT_DEFAULT, FONT_MAX, FONT_MIN, LINK_HEX, nextColor, PanelDef, SignalDto } from "./api";
 import { dragBar, WinButtons } from "./win";
 import { useStore } from "./store";
-import { FiltersBox, MenuAt, PanelMenu, RenameBox } from "./Menu";
+import { openPanelMenu } from "./Menu";
 
 const MAX_ROWS = 200;
 /// Rows newer than this (market time) are bright; older are dimmed, as in Primus.
@@ -48,12 +48,10 @@ export function PanelWindow({ id }: { id: string }) {
   }, [def]);
   if (!panels) return <div className="dk-empty">loading…</div>;
   if (!def) return <div className="dk-empty bad">This panel was deleted. Close the window.</div>;
-  return <Panel def={def} meta={meta} filters={filters} />;
+  return <Panel def={def} meta={meta} />;
 }
 
-export default function Panel({ def, meta, filters: allFilters }: { def: PanelDef; meta: Map<string, FilterMeta>; filters: FilterMeta[] }) {
-  const [menu, setMenu] = useState<MenuAt | null>(null);
-  const [box, setBox] = useState<null | "rename" | "filters">(null);
+export default function Panel({ def, meta }: { def: PanelDef; meta: Map<string, FilterMeta> }) {
   const filters = def.filters;
   const color = def.link;
   const metas = filters.map((f) => meta.get(f)).filter((m): m is FilterMeta => !!m);
@@ -101,7 +99,7 @@ export default function Panel({ def, meta, filters: allFilters }: { def: PanelDe
   const openMenu = (e: React.MouseEvent, symbol?: string, filter?: string) => {
     e.preventDefault();
     e.stopPropagation();
-    setMenu({ x: e.clientX, y: e.clientY, symbol, filter });
+    openPanelMenu(def.id, symbol, filter);
   };
   const symClass = (side: string) => "sym " + (side === "long" ? "up" : side === "short" ? "dn" : "");
 
@@ -166,9 +164,6 @@ export default function Panel({ def, meta, filters: allFilters }: { def: PanelDe
           </tbody>
         </table>
       </div>
-      {menu && <PanelMenu at={menu} def={def} onClose={() => setMenu(null)} onRename={() => setBox("rename")} onFilters={() => setBox("filters")} />}
-      {box === "rename" && <RenameBox def={def} onClose={() => setBox(null)} />}
-      {box === "filters" && <FiltersBox def={def} filters={allFilters} onClose={() => setBox(null)} />}
     </div>
   );
 }

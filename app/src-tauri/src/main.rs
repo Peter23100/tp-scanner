@@ -42,6 +42,10 @@ struct UiState {
     /// Window label → outer position and inner size, physical pixels.
     #[serde(default)]
     geom: HashMap<String, Geom>,
+    /// 2 once the windows saved by the first app versions (tiled with gaps: two invisible borders
+    /// across, a title bar's worth down) have been tidied, once, at launch.
+    #[serde(default)]
+    geom_version: u32,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -686,6 +690,9 @@ fn open_window(handle: &AppHandle, app: &App, rec: &WinRec, tile: Option<(String
         .inner_size(w, h)
         .min_inner_size(160.0, 60.0)
         .decorations(false)
+        // No shadow: on Windows 11 the shadow brings rounded corners and a border, which read as a
+        // gap between windows that touch.
+        .shadow(false)
         .visible(false)
         .build()
         .map_err(|e| e.to_string())?;
@@ -939,6 +946,50 @@ async fn filter_undo(app: State<'_, App>, name: String, kind: Option<String>) ->
     }
 }
 
+/// The panel menu, as its own small window at the mouse pointer: a panel can be too small to
+/// hold it. It sits on top, and closes itself when it loses focus.
+#[tauri::command]
+async fn open_menu(handle: AppHandle, panel: String, symbol: Option<String>, filter: Option<String>) -> Result<(), String> {
+    if let Some(w) = handle.get_webview_window("popup-menu") {
+        let _ = w.destroy();
+    }
+    let enc = |s: Option<String>| s.filter(|s| !s.is_empty()).map(|s| s.replace('/', "_")).unwrap_or_else(|| "-".into());
+    let route = format!("#/menu/{panel}/{}/{}", enc(symbol), enc(filter));
+    let at = handle.cursor_position().map_err(|e| e.to_string())?;
+    let w = WebviewWindowBuilder::new(&handle, "popup-menu", WebviewUrl::App(route.into()))
+        .title("Menu")
+        .inner_size(240.0, 300.0)
+        .decorations(false)
+        .resizable(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .visible(false)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let _ = w.set_position(PhysicalPosition::new(at.x as i32, at.y as i32));
+    Ok(())
+}
+
+/// The menu window, sized to its content (CSS px) and kept on its monitor, then shown.
+#[tauri::command]
+async fn popup_fit(window: WebviewWindow, width: f64, height: f64) -> Result<(), String> {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let (w, h) = ((width * scale).ceil() as i32, (height * scale).ceil() as i32);
+    let pos = window.outer_position().map_err(|e| e.to_string())?;
+    let (mut x, mut y) = (pos.x, pos.y);
+    if let Ok(Some(m)) = window.current_monitor() {
+        let a = m.work_area();
+        let (x0, y0, x1, y1) = (a.position.x, a.position.y, a.position.x + a.size.width as i32, a.position.y + a.size.height as i32);
+        x = x.min(x1 - w).max(x0);
+        y = y.min(y1 - h).max(y0);
+    }
+    let _ = window.set_size(PhysicalSize::new(w as u32, h as u32));
+    let _ = window.set_position(PhysicalPosition::new(x, y));
+    window.show().map_err(|e| e.to_string())?;
+    let _ = window.set_size(PhysicalSize::new(w as u32, h as u32));
+    window.set_focus().map_err(|e| e.to_string())
+}
+
 /// A tool window: `why` (filter + symbol) or `edit` (filter).
 #[tauri::command]
 async fn open_dialog(handle: AppHandle, app: State<'_, App>, kind: String, filter: String, symbol: Option<String>) -> Result<(), String> {
@@ -953,6 +1004,7 @@ async fn open_dialog(handle: AppHandle, app: State<'_, App>, kind: String, filte
         }
         "edit" => (format!("dialog-edit-{}", clean(&filter)), format!("#/edit/{filter}"), 760.0, 620.0),
         "basket" => (format!("dialog-basket-{}", clean(&filter)), format!("#/basket/{filter}"), 640.0, 640.0),
+        "panel" => (format!("dialog-panel-{}", clean(&filter)), format!("#/panelset/{filter}"), 420.0, 620.0),
         k => return Err(format!("unknown dialog `{k}`")),
     };
     if let Some(w) = handle.get_webview_window(&label) {
@@ -963,10 +1015,14 @@ async fn open_dialog(handle: AppHandle, app: State<'_, App>, kind: String, filte
         .title(match kind.as_str() {
             "why" => "Why",
             "basket" => "Basket",
+            "panel" => "Panel settings",
             _ => "Adjust filter",
         })
         .inner_size(w, h)
         .decorations(false)
+        // No shadow: on Windows 11 the shadow brings rounded corners and a border, which read as a
+        // gap between windows that touch.
+        .shadow(false)
         .visible(false)
         .build()
         .map_err(|e| e.to_string())?;
@@ -1048,39 +1104,52 @@ fn set_frame(w: &WebviewWindow, f: &Frame, (l, t, r, b): (i32, i32, i32, i32)) -
     Geom { x: l - f.inset_l, y: t - f.inset_t, w: wd, h: ht }
 }
 
-/// How close (physical px) an edge must be to another to snap to it.
+/// How close (physical px) an edge must be to another to snap to it when you let go of a window.
 const SNAP: i32 = 18;
+/// Tidy's reach: wide enough for the gaps the first versions left (17 across, 39 down).
+const TIDY: i32 = 45;
 
-/// The nearest of `candidates` to `v`, if within SNAP.
-fn nearest(v: i32, candidates: &[i32]) -> Option<i32> {
-    candidates.iter().copied().filter(|c| (c - v).abs() <= SNAP).min_by_key(|c| (c - v).abs())
+/// The nearest of `candidates` to `v`, if within `reach`.
+fn nearest(v: i32, candidates: &[i32], reach: i32) -> Option<i32> {
+    candidates.iter().copied().filter(|c| (c - v).abs() <= reach).min_by_key(|c| (c - v).abs())
 }
 
-/// Snap one window's edges to its neighbours' edges and its monitor's work area. An edge snaps
-/// only to windows beside it (overlapping on the other axis). One edge snapping moves the window;
-/// both snapping fits it to the gap. Returns whether it moved.
-fn snap_window(handle: &AppHandle, label: &str) -> bool {
-    let Some(w) = handle.get_webview_window(label) else { return false };
-    if w.is_minimized().unwrap_or(true) || w.is_maximized().unwrap_or(true) || !w.is_visible().unwrap_or(false) {
-        return false;
-    }
-    let Some(f) = frame_of(&w) else { return false };
-    let others: Vec<Frame> = handle
+/// Every snappable window that's showing, with its visible rectangle, read once (each read is a
+/// round trip to the window thread; reading per pair made a tidy of 60 windows take ~10 s).
+fn desk(handle: &AppHandle) -> Vec<(String, WebviewWindow, Frame)> {
+    handle
         .webview_windows()
-        .iter()
-        .filter(|(l, o)| *l != label && snappable(l) && o.is_visible().unwrap_or(false) && !o.is_minimized().unwrap_or(true))
-        .filter_map(|(_, o)| frame_of(o))
-        .collect();
-    let (cx, cy) = ((f.l + f.r) / 2, (f.t + f.b) / 2);
-    let wa = handle.available_monitors().ok().and_then(|ms| {
-        ms.into_iter().find_map(|m| {
-            let a = m.work_area();
-            let (x, y, wd, ht) = (a.position.x, a.position.y, a.size.width as i32, a.size.height as i32);
-            (cx >= x && cx < x + wd && cy >= y && cy < y + ht).then_some((x, y, x + wd, y + ht))
+        .into_iter()
+        .filter(|(l, w)| snappable(l) && w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(true) && !w.is_maximized().unwrap_or(true))
+        .filter_map(|(l, w)| frame_of(&w).map(|f| (l, w, f)))
+        .collect()
+}
+
+/// Every monitor's work area (left, top, right, bottom).
+fn work_areas(handle: &AppHandle) -> Vec<(i32, i32, i32, i32)> {
+    handle
+        .available_monitors()
+        .map(|ms| {
+            ms.iter()
+                .map(|m| {
+                    let a = m.work_area();
+                    (a.position.x, a.position.y, a.position.x + a.size.width as i32, a.position.y + a.size.height as i32)
+                })
+                .collect()
         })
-    });
-    let beside_v = |o: &Frame| o.t < f.b + SNAP && o.b > f.t - SNAP;
-    let beside_h = |o: &Frame| o.l < f.r + SNAP && o.r > f.l - SNAP;
+        .unwrap_or_default()
+}
+
+/// Snap window `i` of `desk` to its neighbours' edges and its monitor's work area. An edge snaps
+/// only to windows beside it (overlapping on the other axis). One edge snapping moves the window;
+/// both snapping fits it to the gap. Updates `desk[i]` and returns whether it moved.
+fn snap_in(handle: &AppHandle, desk: &mut [(String, WebviewWindow, Frame)], areas: &[(i32, i32, i32, i32)], i: usize, reach: i32) -> bool {
+    let f = desk[i].2;
+    let others: Vec<Frame> = desk.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, d)| d.2).collect();
+    let (cx, cy) = ((f.l + f.r) / 2, (f.t + f.b) / 2);
+    let wa = areas.iter().copied().find(|&(x0, y0, x1, y1)| cx >= x0 && cx < x1 && cy >= y0 && cy < y1);
+    let beside_v = |o: &Frame| o.t < f.b + reach && o.b > f.t - reach;
+    let beside_h = |o: &Frame| o.l < f.r + reach && o.r > f.l - reach;
     let mut xl: Vec<i32> = others.iter().filter(|o| beside_v(o)).flat_map(|o| [o.r, o.l]).collect();
     let mut xr = xl.clone();
     let mut yt: Vec<i32> = others.iter().filter(|o| beside_h(o)).flat_map(|o| [o.b, o.t]).collect();
@@ -1097,25 +1166,36 @@ fn snap_window(handle: &AppHandle, label: &str) -> bool {
         (None, Some(b2)) => (a + (b2 - b), b2),
         _ => (a, b),
     };
-    let (l, r) = fit(f.l, f.r, nearest(f.l, &xl), nearest(f.r, &xr));
-    let (t, b) = fit(f.t, f.b, nearest(f.t, &yt), nearest(f.b, &yb));
+    let (l, r) = fit(f.l, f.r, nearest(f.l, &xl, reach), nearest(f.r, &xr, reach));
+    let (t, b) = fit(f.t, f.b, nearest(f.t, &yt, reach), nearest(f.b, &yb, reach));
     if (l, t, r, b) == (f.l, f.t, f.r, f.b) {
         return false;
     }
-    let g = set_frame(&w, &f, (l, t, r, b));
-    handle.state::<App>().snapped.lock().expect("snapped").insert(label.to_string(), g);
+    let g = set_frame(&desk[i].1, &f, (l, t, r, b));
+    handle.state::<App>().snapped.lock().expect("snapped").insert(desk[i].0.clone(), g);
+    desk[i].2 = Frame { l, t, r, b, ..f };
     true
 }
 
+/// Snap one window (the one the user just let go of).
+fn snap_window(handle: &AppHandle, label: &str, reach: i32) -> bool {
+    let mut d = desk(handle);
+    let areas = work_areas(handle);
+    match d.iter().position(|x| x.0 == label) {
+        Some(i) => snap_in(handle, &mut d, &areas, i, reach),
+        None => false,
+    }
+}
+
 /// Close the gaps between every open panel and chart, as they are now arranged.
-#[tauri::command]
-async fn tidy_windows(handle: AppHandle) -> Result<String, String> {
-    let labels: Vec<String> = handle.webview_windows().keys().filter(|l| snappable(l)).cloned().collect();
+fn tidy(handle: &AppHandle) -> usize {
+    let mut d = desk(handle);
+    let areas = work_areas(handle);
     let mut moved = 0;
-    for _ in 0..3 {
+    for _ in 0..4 {
         let mut any = false;
-        for l in &labels {
-            if snap_window(&handle, l) {
+        for i in 0..d.len() {
+            if snap_in(handle, &mut d, &areas, i, TIDY) {
                 moved += 1;
                 any = true;
             }
@@ -1123,9 +1203,13 @@ async fn tidy_windows(handle: AppHandle) -> Result<String, String> {
         if !any {
             break;
         }
-        std::thread::sleep(Duration::from_millis(120));
     }
-    Ok(format!("{moved} window edge adjustments"))
+    moved
+}
+
+#[tauri::command]
+async fn tidy_windows(handle: AppHandle) -> Result<String, String> {
+    Ok(format!("{} window edge adjustments", tidy(&handle)))
 }
 
 /// Every open panel and group chart back on its Primus grid tile.
@@ -1225,6 +1309,8 @@ fn main() {
             filter_undo,
             basket_count,
             tidy_windows,
+            open_menu,
+            popup_fit,
             arrange_windows,
             layouts_list,
             layout_save,
@@ -1262,7 +1348,7 @@ fn main() {
                             due
                         };
                         for l in due {
-                            snap_window(&handle, &l);
+                            snap_window(&handle, &l, SNAP);
                         }
                     }
                 })
@@ -1279,6 +1365,10 @@ fn main() {
                     }
                 })
                 .expect("spawn ui saver");
+            // The launcher bar stays above the panel and chart windows.
+            if let Some(w) = app.get_webview_window("launcher") {
+                let _ = w.set_always_on_top(true);
+            }
             if let (Some(g), Some(w)) = (launcher_geom.filter(|g| on_screen(app.handle(), g)), app.get_webview_window("launcher")) {
                 let _ = w.set_size(PhysicalSize::new(g.w, g.h));
                 let _ = w.set_position(PhysicalPosition::new(g.x, g.y));
@@ -1288,6 +1378,16 @@ fn main() {
                 if let Err(e) = open_window(app.handle(), &state, rec, None) {
                     eprintln!("reopen {}: {e}", rec.label);
                 }
+            }
+            if state.ui.lock().expect("ui").geom_version < 2 {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_secs(4)); // the reopened windows settle first
+                    tidy(&handle);
+                    let app = handle.state::<App>();
+                    app.ui.lock().expect("ui").geom_version = 2;
+                    app.dirty.store(true, Ordering::SeqCst);
+                });
             }
             Ok(())
         })

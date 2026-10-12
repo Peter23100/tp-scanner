@@ -534,6 +534,12 @@ tr.sel > td:first-child {
   color: var(--dkt);
   padding: 3px 0;
 }
+.menu.page {
+  position: static;
+  display: inline-block;
+  box-shadow: none;
+  border: 1px solid #2a3a54;
+}
 .menu-title {
   padding: 3px 10px 5px;
   font-size: 10px;

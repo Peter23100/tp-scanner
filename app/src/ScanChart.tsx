@@ -170,7 +170,10 @@ export default function ScanChart({ id, initialColor, standalone }: { id: string
   const chartRef = useRef<any>(null);
   const dataRef = useRef<KBar[]>([]);
   const dataSymbolRef = useRef("");
-  const lastMinuteRef = useRef<number>(-Infinity);
+  /// The loaded history covers everything before this instant (the end of its newest 1-minute bar).
+  /// A live bar starting earlier is already counted in it: per-second bars inside that last minute
+  /// would otherwise add its volume twice.
+  const histEndRef = useRef<number>(-Infinity);
   const loadSeqRef = useRef(0);
   const activeIndsRef = useRef<Set<string>>(new Set());
   const extraPaneIdsRef = useRef<Map<string, string>>(new Map());
@@ -320,13 +323,13 @@ export default function ScanChart({ id, initialColor, standalone }: { id: string
         const session = sessionBars(out);
         pocValueRef.current = safeCalcPOC(session);
         vaValueRef.current = safeCalcValueArea(session);
-        lastMinuteRef.current = r.last_minute ?? -Infinity;
+        histEndRef.current = r.last_minute != null ? r.last_minute + 60_000 : -Infinity;
       } else {
         const out = r.bars.length > bars ? r.bars.slice(-bars) : r.bars;
         kData = out.map(([t, o, h, l, c, v]) => ({ timestamp: t, open: o, high: h, low: l, close: c, volume: v }));
         pocValueRef.current = null;
         vaValueRef.current = null;
-        lastMinuteRef.current = -Infinity;
+        histEndRef.current = -Infinity;
       }
       if (!kData.length) {
         applyNoData();
@@ -401,8 +404,7 @@ export default function ScanChart({ id, initialColor, standalone }: { id: string
       const chart = chartRef.current,
         data = dataRef.current;
       if (!chart || !data.length) return;
-      if (b.t <= lastMinuteRef.current) return; // already inside the loaded history
-      lastMinuteRef.current = b.t;
+      if (b.t < histEndRef.current) return; // already inside the loaded history
       const mins = etMinsOfDay(b.t);
       const rth = mins >= RTH_START_MIN && mins < RTH_END_MIN;
       const ext = (mins >= PREMKT_START_MIN && mins < RTH_START_MIN) || (mins >= RTH_END_MIN && mins < POST_END_MIN);

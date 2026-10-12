@@ -82,7 +82,9 @@ The launcher bar (TradierPro's menubar and status bar):
   when you let go.
 - **Baskets ▾**: named sets of qualifications (type, exchange, price, float, average volume, ATR)
   a filter can draw from; the editor shows how many symbols pass before you save.
-- **LIVE** (Massive WebSocket; delayed on Starter) or **REPLAY** a past day (downloaded on first
+- **LIVE** (Massive WebSocket, **per-second bars** for the whole market, `A.*`; delayed on Starter.
+  Individual trades, `T.*`, aren't on Starter. Replays of past days are minute bars: the flat files
+  are minute-level) or **REPLAY** a past day (downloaded on first
   use) from a chosen time at 1x-300x or max speed.
 
 In a panel: click a symbol to send it to every chart of the panel's link colour; with **Charts

@@ -191,7 +191,7 @@ export const api = {
     invoke<string>("filter_save", { name, block, reason, tested, kind }),
   filterUndo: (name: string, kind: "filter" | "basket" = "filter") => invoke<string>("filter_undo", { name, kind }),
   basketCount: (name: string, block: string) => invoke<BasketCount>("basket_count", { name, block }),
-  openDialog: (kind: "why" | "edit" | "basket", filter: string, symbol: string | null) => invoke<void>("open_dialog", { kind, filter, symbol }),
+  openDialog: (kind: "why" | "edit" | "basket" | "panel", filter: string, symbol: string | null) => invoke<void>("open_dialog", { kind, filter, symbol }),
   tickerName: (symbol: string) => invoke<string | null>("ticker_name", { symbol }),
   tidyWindows: () => invoke<string>("tidy_windows"),
   arrangeWindows: () => invoke<string>("arrange_windows"),
