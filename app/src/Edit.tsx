@@ -210,7 +210,7 @@ export default function EditWindow({ filter }: { filter: string }) {
         )}
       </div>
       <div className="tool-foot">
-        <button className="dk-btn" disabled={!!busy} onClick={doTest} title="run the edit against the filter as loaded, over a recorded day">
+        <button className="dk-btn" disabled={!!busy} onClick={doTest} title="run the edit against the filter as loaded, over a recorded day (on its minute bars: fast; live runs per-second, so live can fire a little earlier)">
           {busy === "testing" ? "Testing…" : "Test"}
         </button>
         <input className="menu-in wide" placeholder="why this change (goes in CHANGES.md)" value={reason} onChange={(e) => setReason(e.target.value)} />

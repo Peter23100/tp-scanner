@@ -39,6 +39,12 @@ const SANE_MS: std::ops::Range<i64> = 946_684_800_000..4_102_444_800_000;
 
 /// Read one day file into a time-ordered replay of one-minute bars.
 pub fn read_minute_aggs(input: impl BufRead) -> Result<ReplaySource, SourceError> {
+    read_aggs(input, Resolution::Minute)
+}
+
+/// Read a day file in the same format whose bars are `resolution` wide (the scanner stores
+/// per-second days, fetched over REST, this way).
+pub fn read_aggs(input: impl BufRead, resolution: Resolution) -> Result<ReplaySource, SourceError> {
     let mut rows: Vec<(Ts, Symbol, Bar<Unadjusted>)> = Vec::new();
     let mut interned: HashMap<String, Symbol> = HashMap::new();
     let mut lines = input.lines().enumerate();
@@ -96,7 +102,7 @@ pub fn read_minute_aggs(input: impl BufRead) -> Result<ReplaySource, SourceError
     rows.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     let events = rows
         .into_iter()
-        .map(|(_, symbol, bar)| MarketEvent::Bar { symbol, resolution: Resolution::Minute, bar })
+        .map(|(_, symbol, bar)| MarketEvent::Bar { symbol, resolution, bar })
         .collect();
     ReplaySource::from_events(events)
 }

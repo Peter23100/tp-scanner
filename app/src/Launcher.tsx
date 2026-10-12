@@ -36,6 +36,15 @@ export default function Launcher() {
   const [date, setDate] = useState(lastWeekday());
   const [startAt, setStartAt] = useState("09:00");
   const [speed, setSpeed] = useState(60);
+  // Per-second replay (the live scan's granularity). The first replay of a day downloads its
+  // per-second bars (a few minutes); after that it's on disk.
+  const [perSecond, setPerSecond] = useState(() => {
+    try {
+      return localStorage.getItem("replay-seconds") === "1";
+    } catch {
+      return false;
+    }
+  });
   const [chartColor, setChartColor] = useState("red");
   const [msg, setMsg] = useState<{ text: string; bad: boolean } | null>(null);
   const [open, setOpen] = useState<Open>(null);
@@ -139,7 +148,22 @@ export default function Launcher() {
             </option>
           ))}
         </select>
-        <button className={"sb-btn " + (mode === "replay" ? "on" : "")} onClick={() => run(api.startReplay(date, speed, startAt || null))}>
+        <label className="sb-chk" title="replay the day's per-second bars, as the live scan sees them (the first time, the day is downloaded: a few minutes)">
+          <input
+            type="checkbox"
+            checked={perSecond}
+            onChange={(e) => {
+              setPerSecond(e.target.checked);
+              try {
+                localStorage.setItem("replay-seconds", e.target.checked ? "1" : "0");
+              } catch {
+                /* not remembered */
+              }
+            }}
+          />
+          1s
+        </label>
+        <button className={"sb-btn " + (mode === "replay" ? "on" : "")} onClick={() => run(api.startReplay(date, speed, startAt || null, perSecond))}>
           REPLAY
         </button>
         <button className="sb-btn" onClick={() => run(api.stopSource())}>

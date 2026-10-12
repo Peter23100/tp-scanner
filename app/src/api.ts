@@ -57,6 +57,8 @@ export interface FilterMeta {
   columns: string[];
   ranked: boolean;
   basket: string | null;
+  /** Reads premarket data: a chart it drives keeps the premarket after the open. */
+  premarket: boolean;
 }
 
 /** A named basket (filters/baskets.scan): `ranges` are [key, min, max]. */
@@ -172,12 +174,12 @@ export const api = {
   getSnapshot: () => invoke<Snapshot>("get_snapshot"),
   reloadFilters: () => invoke<string>("reload_filters"),
   startLive: (realtime: boolean) => invoke<void>("start_live", { realtime }),
-  startReplay: (date: string, speed: number, startAt: string | null) => invoke<void>("start_replay", { date, speed, startAt }),
+  startReplay: (date: string, speed: number, startAt: string | null, seconds = false) => invoke<void>("start_replay", { date, speed, startAt, seconds }),
   setSpeed: (speed: number) => invoke<void>("set_speed", { speed }),
   stopSource: () => invoke<void>("stop_source"),
   explain: (filter: string, symbol: string) => invoke<string>("explain", { filter, symbol }),
-  linkSet: (color: string, symbol: string) => invoke<void>("link_set", { color, symbol }),
-  linkGet: () => invoke<Record<string, string>>("link_get"),
+  linkSet: (color: string, symbol: string, filter: string | null = null) => invoke<void>("link_set", { color, symbol, filter }),
+  linkGet: () => invoke<{ symbols: Record<string, string>; filters: Record<string, string | null> }>("link_get"),
   panelsGet: () => invoke<Panels>("panels_get"),
   panelUpdate: (panel: PanelDef) => invoke<void>("panel_update", { panel }),
   panelCreate: () => invoke<string>("panel_create"),

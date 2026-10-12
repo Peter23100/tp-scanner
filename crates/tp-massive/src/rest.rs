@@ -130,7 +130,7 @@ impl Rest {
         Ok(self.get_all(&url)?.iter().filter_map(parse_agg_row).collect())
     }
 
-    /// Bars for a chart: `timespan` is "minute", "day", "week" or "month"; split-adjusted when
+    /// Bars for a chart: `timespan` is "second", "minute", "day", "week" or "month"; split-adjusted when
     /// `adjusted` (display only, so plain numbers rather than a typed bar). `[t_ms, o, h, l, c, v]`,
     /// oldest first, every page.
     pub fn chart_bars(&self, ticker: &str, timespan: &str, from: NaiveDate, to: NaiveDate, adjusted: bool) -> Result<Vec<[f64; 6]>, MassiveError> {
@@ -147,7 +147,7 @@ fn aggs_url(base: &str, ticker: &str, timespan: &str, from: NaiveDate, to: Naive
     if ticker.is_empty() || !ticker.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
         return Err(MassiveError::Parse(format!("`{ticker}` is not a ticker")));
     }
-    if !matches!(timespan, "minute" | "day" | "week" | "month") {
+    if !matches!(timespan, "second" | "minute" | "day" | "week" | "month") {
         return Err(MassiveError::Parse(format!("`{timespan}` is not a bar timespan")));
     }
     Ok(format!("{base}/v2/aggs/ticker/{ticker}/range/1/{timespan}/{from}/{to}?adjusted={adjusted}&sort=asc&limit=50000"))

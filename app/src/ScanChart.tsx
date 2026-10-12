@@ -48,9 +48,10 @@ const IVL_MS: Record<string, number> = { "1m": 60_000, "5m": 300_000, "15m": 900
 
 /// Which bars an intraday chart shows. TradierPro's rule: regular hours of every day, plus the
 /// current extended session (everything after the last regular-hours bar: post-market, then the
-/// next premarket until the open). The scanner adds one case (the user's rule, 2026-10-11): when the
-/// symbol fired in today's premarket, today's premarket stays on the chart after the open too, so
-/// that fire's arrow has its bar. A symbol that only fired in regular hours gets TradierPro's chart.
+/// next premarket until the open). The scanner adds one case (the user's rule, 2026-10-12): when
+/// the filter that put the symbol on the chart reads premarket data (pm_high, pm_low, pm_volume,
+/// vwap_ext, extended volume, or `hours pre`), today's premarket stays after the open too. Any
+/// other filter's symbol, or a typed one, gets TradierPro's chart.
 function scannerDisplayBars(raw: OHLCVBar[], keepPremarket: boolean): OHLCVBar[] {
   if (!raw.length) return raw;
   const lastDay = etDateStr(raw[raw.length - 1].time * 1000);
@@ -145,8 +146,15 @@ type KBar = { timestamp: number; open: number; high: number; low: number; close:
 export default function ScanChart({ id, initialColor, standalone }: { id: string; initialColor: string; standalone?: boolean }) {
   const [color, setColor] = useState(initialColor);
   const linked = useStore((s) => s.links[color]) ?? "";
+  const linkedFilter = useStore((s) => s.linkFilters[color] ?? null);
+  const filterMeta = useStore((s) => s.filters);
   const [held, setHeld] = useState<string | null>(null);
+  const [heldFilter, setHeldFilter] = useState<string | null>(null);
   const symbol = held ?? linked;
+  const sourceFilter = held ? heldFilter : linkedFilter;
+  const keepPremarket = !!sourceFilter && !!filterMeta.find((f) => f.name === sourceFilter)?.premarket;
+  const keepPreRef = useRef(keepPremarket);
+  keepPreRef.current = keepPremarket;
   const status = useStore((s) => s.status);
   const replayDate = status?.mode === "replay" ? status.replay?.date ?? null : null;
   const marketMs = status?.market_ms ?? null;
@@ -311,13 +319,7 @@ export default function ScanChart({ id, initialColor, standalone }: { id: string
       let kData: KBar[];
       if (isIntraday) {
         const raw: OHLCVBar[] = r.bars.map(([t, o, h, l, c, v]) => ({ time: t / 1000, open: o, high: h, low: l, close: c, volume: v }));
-        // Keep today's premarket only if this symbol fired in it.
-        const lastDay = raw.length ? etDateStr(raw[raw.length - 1].time * 1000) : "";
-        const firedPre = signalsRef.current.some((s) => {
-          const ms = s.at_ms - 60_000;
-          return s.symbol === symbol && etMinsOfDay(ms) < RTH_START_MIN && etDateStr(ms) === lastDay;
-        });
-        const all = scannerDisplayBars(raw, firedPre);
+        const all = scannerDisplayBars(raw, keepPreRef.current);
         const out = all.length > bars + INTRADAY_INDICATOR_WARMUP ? all.slice(-(bars + INTRADAY_INDICATOR_WARMUP)) : all;
         kData = out.map((b) => ({ timestamp: b.time * 1000, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume, _rth: isRthMs(b.time * 1000) }));
         const session = sessionBars(out);
@@ -392,7 +394,7 @@ export default function ScanChart({ id, initialColor, standalone }: { id: string
     if (!ms) return;
     const t = setInterval(loadData, ms);
     return () => clearInterval(t);
-  }, [ready, symbol, ivl, bars, replayDate]);
+  }, [ready, symbol, ivl, bars, replayDate, keepPremarket]);
 
   // Minutes as the engine reads them (live, or the replay as it runs) roll into the last bar.
   useEffect(() => {
@@ -865,7 +867,10 @@ export default function ScanChart({ id, initialColor, standalone }: { id: string
         <button
           className={"chart-ind-btn " + (held ? "on" : "")}
           title={held ? `holding ${held}: click to follow ${color} again` : "hold this symbol (stop following new fires)"}
-          onClick={() => setHeld(held ? null : symbol || null)}
+          onClick={() => {
+            setHeldFilter(held ? null : sourceFilter);
+            setHeld(held ? null : symbol || null);
+          }}
         >
           {held ? "🔒" : "🔓"}
         </button>

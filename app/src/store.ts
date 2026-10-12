@@ -11,6 +11,8 @@ interface State {
   lists: Record<string, ListRowDto[]>;
   status: StatusDto | null;
   links: Record<string, string>;
+  /** Link colour → the filter that set its symbol (null when typed). */
+  linkFilters: Record<string, string | null>;
   /** What each loaded filter is (kind, side, columns); empty until the engine has loaded. */
   filters: FilterMeta[];
   baskets: BasketDto[];
@@ -18,7 +20,7 @@ interface State {
   panels: Panels | null;
 }
 
-let state: State = { signals: [], lists: {}, status: null, links: {}, filters: [], baskets: [], filtersError: null, panels: null };
+let state: State = { signals: [], lists: {}, status: null, links: {}, linkFilters: {}, filters: [], baskets: [], filtersError: null, panels: null };
 const subs = new Set<() => void>();
 function set(patch: Partial<State>) {
   state = { ...state, ...patch };
@@ -54,8 +56,8 @@ export function startStore() {
   listen("scan-reset", () => set({ signals: [], lists: {} }));
   listen("filters-changed", loadFilters);
   listen("panels-changed", loadPanels);
-  listen<{ color: string; symbol: string }>("link-changed", (e) => {
-    set({ links: { ...state.links, [e.payload.color]: e.payload.symbol } });
+  listen<{ color: string; symbol: string; filter?: string | null }>("link-changed", (e) => {
+    set({ links: { ...state.links, [e.payload.color]: e.payload.symbol }, linkFilters: { ...state.linkFilters, [e.payload.color]: e.payload.filter ?? null } });
   });
   api.getSnapshot().then((snap: Snapshot) => {
     const seen = new Set(snap.signals.map((s) => s.id));
@@ -63,7 +65,7 @@ export function startStore() {
     pending = null;
     set({ signals: merged, lists: snap.lists, status: snap.status });
   });
-  api.linkGet().then((links) => set({ links: { ...links, ...state.links } }));
+  api.linkGet().then((l) => set({ links: { ...l.symbols, ...state.links }, linkFilters: { ...l.filters, ...state.linkFilters } }));
   loadFilters();
   loadPanels();
 }

@@ -196,8 +196,25 @@ pub fn diagnose(cx: &Context, rest: Option<&tp_massive::rest::Rest>, filter: &st
     let symbol = symbol.trim().to_uppercase();
     let program = cx.program.only(filter).ok_or_else(|| format!("no filter `{filter}` loaded"))?;
     let def = &program.filters[0];
-    let (day, source, events, feed_start): (chrono::NaiveDate, String, Vec<MarketEvent>, Option<Ts>) = match cx.replay_date {
-        Some(d) => {
+    let day = cx.replay_date.unwrap_or_else(|| Ts::from_millis(crate::scanner::now_ms()).expect("now").ny().date_naive());
+    let four = Ts::from_ny_local(day, chrono::NaiveTime::from_hms_opt(4, 0, 0).expect("04:00")).ok();
+    // The symbol's per-second bars over REST (one request), the live scan's own granularity.
+    let per_second = rest.and_then(|r| r.chart_bars(&symbol, "second", day, day, false).ok()).filter(|b| !b.is_empty()).map(|bars| {
+        let sym: tp_marketdata::source::Symbol = Arc::from(symbol.as_str());
+        bars.iter()
+            .filter_map(|&[t, o, h, l, c, v]| {
+                let bar = tp_marketdata::bar::Bar { start: Ts::from_millis(t as i64)?, open: tp_marketdata::price::Price::new(o), high: tp_marketdata::price::Price::new(h), low: tp_marketdata::price::Price::new(l), close: tp_marketdata::price::Price::new(c), volume: v };
+                Some(MarketEvent::Bar { symbol: sym.clone(), resolution: Resolution::Second, bar })
+            })
+            .collect::<Vec<_>>()
+    });
+    // A replay only ever looks at its own day up to now; a past day's bars beyond that are fine
+    // for a diagnosis (it asks about the whole day), but live must not run past the clock: REST
+    // ends at the delayed feed's edge anyway.
+    let (source, events, feed_start): (String, Vec<MarketEvent>, Option<Ts>) = match (per_second, cx.replay_date) {
+        (Some(ev), Some(_)) => (format!("Massive per-second bars for {day}"), ev, four),
+        (Some(ev), None) => (format!("Massive per-second bars for {day} (delayed)"), ev, cx.feed_start.or(four)),
+        (None, Some(d)) => {
             let all = day_events(&cx.data_dir, d)?;
             let start = all.first().map(|e| match e {
                 MarketEvent::Bar { bar, .. } => bar.start,
@@ -205,16 +222,14 @@ pub fn diagnose(cx: &Context, rest: Option<&tp_massive::rest::Rest>, filter: &st
                 _ => e.available_at(),
             });
             let mine = all.iter().filter(|e| matches!(e, MarketEvent::Bar { symbol: s, .. } if **s == *symbol)).cloned().collect();
-            (d, format!("the {d} replay file"), mine, start)
+            (format!("the {d} replay file (minute bars)"), mine, start)
         }
-        None => {
-            let rest = rest.ok_or("charts and diagnosis need MASSIVE_API_KEY")?;
-            let today = Ts::from_millis(crate::scanner::now_ms()).expect("now").ny().date_naive();
-            let bars = rest.minute_bars(&symbol, today, today).map_err(|e| e.to_string())?;
+        (None, None) => {
+            let rest = rest.ok_or("diagnosis needs MASSIVE_API_KEY")?;
+            let bars = rest.minute_bars(&symbol, day, day).map_err(|e| e.to_string())?;
             let sym: tp_marketdata::source::Symbol = Arc::from(symbol.as_str());
             let ev = bars.into_iter().map(|bar| MarketEvent::Bar { symbol: sym.clone(), resolution: Resolution::Minute, bar }).collect();
-            let start = cx.feed_start.or_else(|| Ts::from_ny_local(today, chrono::NaiveTime::from_hms_opt(4, 0, 0).expect("04:00")).ok());
-            (today, "Massive minute bars (delayed)".into(), ev, start)
+            ("Massive minute bars (delayed)".into(), ev, cx.feed_start.or(four))
         }
     };
     if events.is_empty() {

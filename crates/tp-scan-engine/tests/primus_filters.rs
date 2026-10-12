@@ -408,3 +408,19 @@ fn a_capitulation_fires_contra_long() {
         assert!(!(sig.filter.starts_with("Contra_Short") && sig.side == Side::Short), "{} fired", sig.filter);
     }
 }
+
+/// Which of the shipped filters read premarket data (the charts keep the premarket only for their
+/// symbols). Pinned so a filter edit that changes it is noticed.
+#[test]
+fn premarket_filters_are_the_ones_reading_premarket_data() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../filters");
+    let p = tp_scan_engine::lang::load_dir(&dir).unwrap();
+    let pm: Vec<&str> = p.filters.iter().filter(|f| p.uses_premarket(&f.name)).map(|f| &*f.name).collect();
+    for name in ["PM_Coil_Up", "PM_Coil_Down", "PM_LowFloat_Coil_Up"] {
+        assert!(pm.contains(&name), "{name} reads pm_high/pm_low: {pm:?}");
+    }
+    for name in ["M_Drive_Up", "M_Spike_Down", "Contra_Short"] {
+        assert!(!pm.contains(&name), "{name} is regular-hours only: {pm:?}");
+    }
+    println!("premarket filters: {pm:?}");
+}

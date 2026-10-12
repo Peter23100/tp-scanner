@@ -42,8 +42,8 @@ struct UiState {
     /// Window label → outer position and inner size, physical pixels.
     #[serde(default)]
     geom: HashMap<String, Geom>,
-    /// 2 once the windows saved by the first app versions (tiled with gaps: two invisible borders
-    /// across, a title bar's worth down) have been tidied, once, at launch.
+    /// [`GEOM_VERSION`] once the windows saved by earlier app versions (tiled with gaps: two invisible
+    /// borders across, a title bar's worth down) have been tidied, once, at launch.
     #[serde(default)]
     geom_version: u32,
 }
@@ -60,19 +60,25 @@ struct Geom {
 #[serde(tag = "mode", rename_all = "lowercase")]
 enum Resume {
     Live { realtime: bool },
-    Replay { date: String, speed: f64, start_at: Option<String> },
+    Replay {
+        date: String,
+        speed: f64,
+        start_at: Option<String>,
+        #[serde(default)]
+        seconds: bool,
+    },
 }
 
 fn resume_cmd(r: &Resume) -> Result<Cmd, String> {
     match r {
         Resume::Live { realtime } => Ok(Cmd::Live { realtime: *realtime }),
-        Resume::Replay { date, speed, start_at } => {
+        Resume::Replay { date, speed, start_at, seconds } => {
             let date = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").map_err(|e| format!("date `{date}`: {e}"))?;
             let start_at = match start_at.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
                 Some(s) => Some(chrono::NaiveTime::parse_from_str(s, "%H:%M").map_err(|e| format!("start `{s}`: {e}"))?),
                 None => None,
             };
-            Ok(Cmd::Replay { date, speed: *speed, start_at })
+            Ok(Cmd::Replay { date, speed: *speed, start_at, seconds: *seconds })
         }
     }
 }
@@ -259,8 +265,8 @@ fn start_live(app: State<'_, App>, realtime: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn start_replay(app: State<'_, App>, date: String, speed: f64, start_at: Option<String>) -> Result<(), String> {
-    start(&app, Resume::Replay { date, speed, start_at })
+fn start_replay(app: State<'_, App>, date: String, speed: f64, start_at: Option<String>, seconds: Option<bool>) -> Result<(), String> {
+    start(&app, Resume::Replay { date, speed, start_at, seconds: seconds.unwrap_or(false) })
 }
 
 #[tauri::command]
@@ -289,19 +295,30 @@ async fn explain(app: State<'_, App>, filter: String, symbol: String) -> Result<
 }
 
 #[tauri::command]
-fn link_set(handle: AppHandle, app: State<'_, App>, color: String, symbol: String) -> Result<(), String> {
+fn link_set(handle: AppHandle, app: State<'_, App>, color: String, symbol: String, filter: Option<String>) -> Result<(), String> {
     if !layout::LINK_COLORS.contains(&color.as_str()) {
         return Err(format!("no link colour `{color}`"));
     }
     let symbol = symbol.trim().to_uppercase();
-    app.shared.lock().expect("shared").links.insert(color.clone(), symbol.clone());
+    {
+        let mut g = app.shared.lock().expect("shared");
+        g.links.insert(color.clone(), symbol.clone());
+        g.link_filters.insert(color.clone(), filter.clone());
+    }
     app.save_ui();
-    handle.emit("link-changed", serde_json::json!({"color": color, "symbol": symbol})).map_err(|e| e.to_string())
+    handle.emit("link-changed", serde_json::json!({"color": color, "symbol": symbol, "filter": filter})).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+struct LinksReply {
+    symbols: HashMap<String, String>,
+    filters: HashMap<String, Option<String>>,
 }
 
 #[tauri::command]
-fn link_get(app: State<'_, App>) -> HashMap<String, String> {
-    app.shared.lock().expect("shared").links.clone()
+fn link_get(app: State<'_, App>) -> LinksReply {
+    let g = app.shared.lock().expect("shared");
+    LinksReply { symbols: g.links.clone(), filters: g.link_filters.clone() }
 }
 
 #[tauri::command]
@@ -1106,6 +1123,10 @@ fn set_frame(w: &WebviewWindow, f: &Frame, (l, t, r, b): (i32, i32, i32, i32)) -
 
 /// How close (physical px) an edge must be to another to snap to it when you let go of a window.
 const SNAP: i32 = 18;
+/// Desks saved before this are tidied once at launch. 3: the tidy that prefers facing edges
+/// (version 2's tidy let a stacked window's shared edge win, and left most gaps).
+const GEOM_VERSION: u32 = 3;
+
 /// Tidy's reach: wide enough for the gaps the first versions left (17 across, 39 down).
 const TIDY: i32 = 45;
 
@@ -1148,26 +1169,42 @@ fn snap_in(handle: &AppHandle, desk: &mut [(String, WebviewWindow, Frame)], area
     let others: Vec<Frame> = desk.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, d)| d.2).collect();
     let (cx, cy) = ((f.l + f.r) / 2, (f.t + f.b) / 2);
     let wa = areas.iter().copied().find(|&(x0, y0, x1, y1)| cx >= x0 && cx < x1 && cy >= y0 && cy < y1);
-    let beside_v = |o: &Frame| o.t < f.b + reach && o.b > f.t - reach;
-    let beside_h = |o: &Frame| o.l < f.r + reach && o.r > f.l - reach;
-    let mut xl: Vec<i32> = others.iter().filter(|o| beside_v(o)).flat_map(|o| [o.r, o.l]).collect();
-    let mut xr = xl.clone();
-    let mut yt: Vec<i32> = others.iter().filter(|o| beside_h(o)).flat_map(|o| [o.b, o.t]).collect();
-    let mut yb = yt.clone();
+    // Facing edges first: a left edge closes onto the right edge of a window beside it (sharing
+    // some height), a top edge onto the bottom of a window above it, and the screen's edges.
+    // Only when none is in reach does an edge line up with a parallel edge (the column it's in).
+    // Without this order, the window stacked above (same left edge, distance 0) always won and
+    // the 16 px gap to the neighbour beside never closed.
+    let overlap_v = |o: &Frame| o.t < f.b && o.b > f.t;
+    let overlap_h = |o: &Frame| o.l < f.r && o.r > f.l;
+    let (mut xl, mut xr, mut yt, mut yb): (Vec<i32>, Vec<i32>, Vec<i32>, Vec<i32>) = (vec![], vec![], vec![], vec![]);
+    for o in others.iter() {
+        if overlap_v(o) {
+            xl.push(o.r);
+            xr.push(o.l);
+        }
+        if overlap_h(o) {
+            yt.push(o.b);
+            yb.push(o.t);
+        }
+    }
     if let Some((x0, y0, x1, y1)) = wa {
         xl.push(x0);
         xr.push(x1);
         yt.push(y0);
         yb.push(y1);
     }
+    let near = |o: &Frame| o.t < f.b + reach && o.b > f.t - reach && o.l < f.r + reach && o.r > f.l - reach;
+    let line_x: Vec<i32> = others.iter().filter(|o| near(o)).flat_map(|o| [o.l, o.r]).collect();
+    let line_y: Vec<i32> = others.iter().filter(|o| near(o)).flat_map(|o| [o.t, o.b]).collect();
+    let pick = |v: i32, facing: &[i32], parallel: &[i32]| nearest(v, facing, reach).or_else(|| nearest(v, parallel, reach));
     let fit = |a: i32, b: i32, na: Option<i32>, nb: Option<i32>| match (na, nb) {
         (Some(a2), Some(b2)) if b2 - a2 >= 40 => (a2, b2),
         (Some(a2), _) => (a2, b + (a2 - a)),
         (None, Some(b2)) => (a + (b2 - b), b2),
         _ => (a, b),
     };
-    let (l, r) = fit(f.l, f.r, nearest(f.l, &xl, reach), nearest(f.r, &xr, reach));
-    let (t, b) = fit(f.t, f.b, nearest(f.t, &yt, reach), nearest(f.b, &yb, reach));
+    let (l, r) = fit(f.l, f.r, pick(f.l, &xl, &line_x), pick(f.r, &xr, &line_x));
+    let (t, b) = fit(f.t, f.b, pick(f.t, &yt, &line_y), pick(f.b, &yb, &line_y));
     if (l, t, r, b) == (f.l, f.t, f.r, f.b) {
         return false;
     }
@@ -1379,13 +1416,13 @@ fn main() {
                     eprintln!("reopen {}: {e}", rec.label);
                 }
             }
-            if state.ui.lock().expect("ui").geom_version < 2 {
+            if state.ui.lock().expect("ui").geom_version < GEOM_VERSION {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(Duration::from_secs(4)); // the reopened windows settle first
                     tidy(&handle);
                     let app = handle.state::<App>();
-                    app.ui.lock().expect("ui").geom_version = 2;
+                    app.ui.lock().expect("ui").geom_version = GEOM_VERSION;
                     app.dirty.store(true, Ordering::SeqCst);
                 });
             }

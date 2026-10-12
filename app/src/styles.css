@@ -1016,3 +1016,5 @@ td.rl {
   border: none;
 }
 .tool-bar .winbtns { margin-left: auto; }
+.sb-chk { display:flex; align-items:center; gap:2px; font-weight:800; cursor:pointer; }
+.sb-chk input { margin:0; }

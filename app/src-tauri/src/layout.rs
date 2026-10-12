@@ -78,6 +78,8 @@ pub struct FilterMeta {
     pub columns: Vec<String>,
     pub ranked: bool,
     pub basket: Option<String>,
+    /// Reads premarket data (Program::uses_premarket): its charts keep the premarket.
+    pub premarket: bool,
 }
 
 #[cfg(test)]
@@ -111,6 +113,7 @@ pub fn filter_meta(p: &Program, c: &Compiled) -> Vec<FilterMeta> {
                 columns: def.map(|d| d.columns.iter().map(|c| c.0.to_string()).collect()).unwrap_or_default(),
                 ranked: def.is_some_and(|d| d.rank.is_some()),
                 basket: def.and_then(|d| d.basket.as_deref().map(str::to_string)),
+                premarket: p.uses_premarket(&f.name),
             }
         })
         .collect()
@@ -161,7 +164,7 @@ mod tests {
     use super::*;
 
     fn meta(name: &str) -> FilterMeta {
-        FilterMeta { name: name.into(), kind: "trigger", side: "long", hours: "rth".into(), cooldown_s: 60, columns: vec![], ranked: false, basket: None }
+        FilterMeta { name: name.into(), kind: "trigger", side: "long", hours: "rth".into(), cooldown_s: 60, columns: vec![], ranked: false, basket: None, premarket: false }
     }
 
     #[test]

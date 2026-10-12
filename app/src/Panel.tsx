@@ -95,7 +95,7 @@ export default function Panel({ def, meta }: { def: PanelDef; meta: Map<string, 
   };
   const listRows = isList ? filters.flatMap((f) => (lists[f] ?? []).map((r) => ({ ...r, filter: f }))) : [];
 
-  const pick = (symbol: string) => api.linkSet(color, symbol).catch(() => {});
+  const pick = (symbol: string, filter: string) => api.linkSet(color, symbol, filter).catch(() => {});
   const openMenu = (e: React.MouseEvent, symbol?: string, filter?: string) => {
     e.preventDefault();
     e.stopPropagation();
@@ -137,7 +137,7 @@ export default function Panel({ def, meta }: { def: PanelDef; meta: Map<string, 
           <tbody>
             {isList
               ? listRows.map((r) => (
-                  <tr key={r.filter + r.symbol} className={r.symbol === linked ? "sel" : ""} onClick={() => pick(r.symbol)} onContextMenu={(e) => openMenu(e, r.symbol, r.filter)}>
+                  <tr key={r.filter + r.symbol} className={r.symbol === linked ? "sel" : ""} onClick={() => pick(r.symbol, r.filter)} onContextMenu={(e) => openMenu(e, r.symbol, r.filter)}>
                     <td className={symClass(meta.get(r.filter)?.side ?? "")}>{r.symbol}</td>
                     {multi && <td className="fname">{r.filter}</td>}
                     <td>{fmtNum(r.last)}</td>
@@ -150,7 +150,7 @@ export default function Panel({ def, meta }: { def: PanelDef; meta: Map<string, 
               : rows.map((s) => {
                   const fresh = marketMs == null || marketMs - s.at_ms < FRESH_MS;
                   return (
-                    <tr key={s.id} className={(fresh ? "" : "old ") + (s.symbol === linked ? "sel" : "")} onClick={() => pick(s.symbol)} onContextMenu={(e) => openMenu(e, s.symbol, s.filter)}>
+                    <tr key={s.id} className={(fresh ? "" : "old ") + (s.symbol === linked ? "sel" : "")} onClick={() => pick(s.symbol, s.filter)} onContextMenu={(e) => openMenu(e, s.symbol, s.filter)}>
                       <td className="tm">{s.time}</td>
                       <td className={symClass(s.side)}>{s.symbol}</td>
                       {multi && <td className="fname">{s.filter}</td>}

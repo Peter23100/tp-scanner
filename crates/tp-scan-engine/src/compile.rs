@@ -168,6 +168,52 @@ pub struct Program {
 }
 
 impl Program {
+    /// Whether a filter reads premarket data: `pm_high`, `pm_low`, `pm_volume`, `vwap_ext` or the
+    /// extended-session volume, directly or through the fields and conditions it uses; or it runs
+    /// in the premarket only (`hours pre`). The app's charts keep the premarket on screen after the
+    /// open only for a symbol a filter like this put there.
+    pub fn uses_premarket(&self, filter: &str) -> bool {
+        let Some(f) = self.filters.iter().find(|f| &*f.name == filter) else { return false };
+        if f.hours == Hours::Pre {
+            return true;
+        }
+        let mut seen: Vec<Arc<str>> = vec![];
+        self.cond_pm(&f.cond, &mut seen)
+    }
+
+    fn cond_pm(&self, c: &Cond, seen: &mut Vec<Arc<str>>) -> bool {
+        match c {
+            Cond::Cmp(a, _, b) => self.num_pm(a, seen) || self.num_pm(b, seen),
+            Cond::All(cs) | Cond::Any(cs) => cs.iter().any(|c| self.cond_pm(c, seen)),
+            Cond::Not(c) => self.cond_pm(c, seen),
+            Cond::Event(_) | Cond::Is(..) => false,
+            Cond::Ref(name) => {
+                if seen.contains(name) {
+                    return false;
+                }
+                seen.push(name.clone());
+                self.cond_defs.iter().find(|(n, _)| n == name).is_some_and(|(_, c)| self.cond_pm(c, seen))
+            }
+        }
+    }
+
+    fn num_pm(&self, e: &Num, seen: &mut Vec<Arc<str>>) -> bool {
+        match e {
+            Num::Const(_) => false,
+            Num::M(m) => matches!(m, Measure::PremarketHigh | Measure::PremarketLow | Measure::PremarketVolume | Measure::VwapExt | Measure::DayVolume { extended: true }),
+            Num::Ref(name) => {
+                if seen.contains(name) {
+                    return false;
+                }
+                seen.push(name.clone());
+                self.num_defs.iter().find(|(n, _)| n == name).is_some_and(|(_, e)| self.num_pm(e, seen))
+            }
+            Num::Add(a, b) | Num::Sub(a, b) | Num::Mul(a, b) | Num::Div(a, b) | Num::Max(a, b) | Num::Min(a, b) => self.num_pm(a, seen) || self.num_pm(b, seen),
+            Num::Neg(a) | Num::Abs(a) => self.num_pm(a, seen),
+            Num::If(c, a, b) => self.cond_pm(c, seen) || self.num_pm(a, seen) || self.num_pm(b, seen),
+        }
+    }
+
     /// The same definitions with only the named filter: one filter run on its own (a symbol
     /// diagnosis, a before/after test of an edit). `None` when there is no such filter.
     pub fn only(&self, filter: &str) -> Option<Program> {

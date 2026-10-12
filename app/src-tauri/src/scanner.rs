@@ -18,7 +18,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
-use tp_marketdata::source::{MarketEvent, MarketSource, ReplaySource};
+use tp_marketdata::source::{MarketEvent, MarketSource, ReplaySource, Resolution};
 use tp_marketdata::time::Ts;
 use tp_massive::daily_cache::RawDaily;
 use tp_massive::ws::{FeedState, LiveSource, Poll};
@@ -116,6 +116,9 @@ pub struct Shared {
     /// Link colour → the symbol its charts show. The single copy: windows set it by click, panels
     /// with Follow on set it on each new fire. `links_dirty` asks the app to save it.
     pub links: HashMap<String, String>,
+    /// Link colour → the filter that set its symbol (a fire it followed, or the panel row clicked);
+    /// `None` when typed. A chart keeps the premarket only for a premarket filter's symbol.
+    pub link_filters: HashMap<String, Option<String>>,
     pub links_dirty: bool,
     /// Filter → the link colours of the panels showing it with Follow on.
     pub follow: HashMap<String, Vec<String>>,
@@ -124,7 +127,8 @@ pub struct Shared {
 pub enum Cmd {
     Reload(Sender<Result<String, String>>),
     Live { realtime: bool },
-    Replay { date: chrono::NaiveDate, speed: f64, start_at: Option<chrono::NaiveTime> },
+    /// `seconds`: replay the day's per-second bars (fetched once over REST) instead of its minute file.
+    Replay { date: chrono::NaiveDate, speed: f64, start_at: Option<chrono::NaiveTime>, seconds: bool },
     SetSpeed(f64),
     Stop,
     Explain { filter: String, symbol: String, reply: Sender<Result<String, String>> },
@@ -194,8 +198,9 @@ impl Sink for AppSink {
                 }
                 self.followed_at.insert(c.clone(), Instant::now());
                 g.links.insert(c.clone(), s.symbol.to_string());
+                g.link_filters.insert(c.clone(), Some(s.filter.to_string()));
                 g.links_dirty = true;
-                let _ = self.app.emit("link-changed", serde_json::json!({"color": c, "symbol": &*s.symbol}));
+                let _ = self.app.emit("link-changed", serde_json::json!({"color": c, "symbol": &*s.symbol, "filter": &*s.filter}));
             }
         }
         let sig = &mut g.snapshot.signals;
@@ -445,10 +450,10 @@ impl Runner {
                     Err(e) => self.set_feed_error(e.to_string()),
                 }
             }
-            Cmd::Replay { date, speed, start_at } => {
+            Cmd::Replay { date, speed, start_at, seconds } => {
                 self.stop_source();
                 self.reset_engine();
-                match self.open_replay(date) {
+                match self.open_replay(date, seconds) {
                     Ok(src) => {
                         let fast_until = start_at.and_then(|t| Ts::from_ny_local(date, t).ok());
                         self.source = Source::Replay(Replay { src, date, speed, fast_until, pending: None, anchor: None, done: false });
@@ -501,7 +506,44 @@ impl Runner {
         }
     }
 
-    fn open_replay(&self, date: chrono::NaiveDate) -> Result<ReplaySource, String> {
+    fn open_replay(&self, date: chrono::NaiveDate, seconds: bool) -> Result<ReplaySource, String> {
+        let minute_file = self.minute_file(date)?;
+        if !seconds {
+            return self.read_day(&minute_file, date, Resolution::Minute);
+        }
+        let path = tp_massive::seconds::local_path(&self.data_dir, date);
+        if !path.exists() {
+            let key = tp_massive::Secret::from_env(tp_massive::API_KEY_VAR).map_err(|e| e.to_string())?;
+            let rest = tp_massive::rest::Rest::new(key).map_err(|e| e.to_string())?;
+            let symbols = tp_massive::seconds::symbols_in(&minute_file).map_err(|e| e.to_string())?;
+            let (shared, app) = (self.shared.clone(), self.app.clone());
+            let progress = move |done: usize, total: usize| {
+                if let Ok(mut g) = shared.lock() {
+                    g.snapshot.status.mode = "loading".into();
+                    g.snapshot.status.feed = format!("downloading {date} per-second bars: {done}/{total} stocks (once; kept for next time)");
+                    let _ = app.emit("scan-tick", Tick { lists: &g.snapshot.lists, status: &g.snapshot.status });
+                }
+            };
+            progress(0, symbols.len());
+            tp_massive::seconds::fetch_day(&rest, &self.data_dir, date, &symbols, &progress).map_err(|e| e.to_string())?;
+        }
+        self.read_day(&path, date, Resolution::Second)
+    }
+
+    fn read_day(&self, path: &std::path::Path, date: chrono::NaiveDate, resolution: Resolution) -> Result<ReplaySource, String> {
+        {
+            let mut g = self.shared.lock().expect("shared");
+            g.snapshot.status.mode = "loading".into();
+            g.snapshot.status.feed = format!("reading {date}{}", if resolution == Resolution::Second { " (per-second)" } else { "" });
+        }
+        let _ = self.emit_tick_now();
+        let f = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let rd = std::io::BufReader::new(flate2::read::GzDecoder::new(f));
+        tp_marketdata::flatfile::read_aggs(rd, resolution).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// The day's minute file, downloaded (S3) if it isn't here yet.
+    fn minute_file(&self, date: chrono::NaiveDate) -> Result<std::path::PathBuf, String> {
         let path = tp_massive::flatfiles::local_path(&self.data_dir, date);
         let path = if path.exists() {
             path
@@ -516,15 +558,7 @@ impl Runner {
             let _ = self.emit_tick_now();
             tp_massive::flatfiles::fetch_minute_aggs(&id, &secret, &self.data_dir, date).map_err(|e| e.to_string())?
         };
-        {
-            let mut g = self.shared.lock().expect("shared");
-            g.snapshot.status.mode = "loading".into();
-            g.snapshot.status.feed = format!("reading {date}");
-        }
-        let _ = self.emit_tick_now();
-        let f = File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let rd = std::io::BufReader::new(flate2::read::GzDecoder::new(f));
-        tp_marketdata::flatfile::read_minute_aggs(rd).map_err(|e| format!("{}: {e}", path.display()))
+        Ok(path)
     }
 
     fn emit_tick_now(&self) -> Option<()> {
